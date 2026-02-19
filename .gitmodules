@@ -1,0 +1,3 @@
+[submodule "sources/quran-json"]
+	path = sources/quran-json
+	url = https://github.com/risan/quran-json.git
