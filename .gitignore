@@ -359,3 +359,10 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# TafsirBot — raw and processed corpus data (can be large; regenerated via pipeline)
+data/raw/
+data/cleaned/
+data/chunks/
+data/embedded/
+!data/**/.gitkeep

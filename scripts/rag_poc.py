@@ -1,0 +1,430 @@
+"""
+rag_poc.py — Python proof-of-concept RAG pipeline for TafsirBot.
+
+Runs the full query path end-to-end without n8n:
+  1. Input normalization
+  2. Intent classification
+  3. Ayah reference resolution → Qdrant metadata filter
+  4. Vector retrieval (top-K chunks)
+  5. Prompt assembly
+  6. LLM generation (Claude Sonnet or GPT-4o, configurable)
+  7. Post-processing: citation extraction + disclaimer
+
+Usage:
+    python scripts/rag_poc.py "What does Ibn Kathir say about 2:255?"
+    python scripts/rag_poc.py --scholar maududi "What is the theme of Surah Al-Baqarah?"
+    python scripts/rag_poc.py --provider openai "What do scholars say about tawakkul?"
+    python scripts/rag_poc.py --top-k 8 --verbose "Explain Ayat al-Kursi"
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+# Allow imports from scripts/ingestion/utils/
+sys.path.insert(0, str(Path(__file__).resolve().parent / "ingestion"))
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s %(levelname)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("rag_poc")
+
+# ── Types ─────────────────────────────────────────────────────────────────────
+
+Intent = Literal["tafsir", "general_islamic", "fiqh_ruling", "off_topic"]
+Provider = Literal["anthropic", "openai"]
+
+DISCLAIMER = (
+    "\n\n---\n"
+    "*This response is an AI-assisted summary of classical Tafsir commentary. "
+    "It is not a fatwa or religious ruling. Please consult a qualified Islamic "
+    "scholar for guidance on religious practice.*"
+)
+
+FIQH_REFUSAL = (
+    "I'm not able to provide a religious ruling (fatwa) on this question. "
+    "For guidance on religious practice, please consult a qualified Islamic scholar. "
+    "I can help explain what the Quran says on related topics — would you like that instead?"
+)
+
+OFF_TOPIC_REFUSAL = (
+    "I can only answer questions about Quranic commentary and Islamic topics. "
+    "If you have a question about a Quranic verse or concept, I'm happy to help."
+)
+
+TOP_K = 5
+MAX_TOKENS = 800
+TEMPERATURE = 0.3
+
+CLAUDE_MODEL = "claude-sonnet-4-6"
+OPENAI_MODEL = "gpt-4o"
+
+
+# ── Step 1: Normalize input ───────────────────────────────────────────────────
+
+def normalize(query: str) -> str:
+    """Strip @mentions, hashtags, excess whitespace, and platform noise."""
+    query = re.sub(r"@\w+", "", query)
+    query = re.sub(r"#\w+", "", query)
+    query = re.sub(r"\s{2,}", " ", query)
+    return query.strip()
+
+
+# ── Step 2: Intent classification ────────────────────────────────────────────
+
+INTENT_SYSTEM = """\
+You are an intent classifier for an Islamic Quran commentary assistant.
+Classify the user's query into exactly one of these four intents:
+
+- tafsir: Questions about the meaning, interpretation, or commentary of Quranic verses
+  or Islamic concepts that can be answered from Tafsir literature.
+- general_islamic: General questions about Islam that are informational, not requests
+  for rulings. (Answerable but with lower confidence.)
+- fiqh_ruling: Requests for fatwa-style rulings — "Is X halal/haram?", "What is the
+  ruling on Y?", "Am I allowed to Z?" — that require a qualified scholar.
+- off_topic: Completely unrelated to Islam or the Quran.
+
+Reply with ONLY the intent word, nothing else.
+"""
+
+
+def classify_intent(query: str, provider: Provider, clients: dict) -> Intent:
+    """Return the intent label for a query using a fast single-token LLM call."""
+    if provider == "anthropic":
+        msg = clients["anthropic"].messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=10,
+            temperature=0,
+            system=INTENT_SYSTEM,
+            messages=[{"role": "user", "content": query}],
+        )
+        intent_raw = msg.content[0].text.strip().lower()
+    else:
+        resp = clients["openai"].chat.completions.create(
+            model=OPENAI_MODEL,
+            max_tokens=10,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": INTENT_SYSTEM},
+                {"role": "user", "content": query},
+            ],
+        )
+        intent_raw = resp.choices[0].message.content.strip().lower()
+
+    valid: set[Intent] = {"tafsir", "general_islamic", "fiqh_ruling", "off_topic"}
+    intent = intent_raw if intent_raw in valid else "tafsir"
+    logger.debug("Intent: %s (raw=%r)", intent, intent_raw)
+    return intent  # type: ignore[return-value]
+
+
+# ── Step 3: Ayah reference resolution ────────────────────────────────────────
+
+def build_qdrant_filter(refs, scholar_filter: str | None) -> dict | None:
+    """
+    Build a Qdrant must-filter from resolved AyahRefs and an optional
+    scholar restriction.  Returns None if no filters should be applied.
+    """
+    conditions: list[dict] = []
+
+    if scholar_filter:
+        conditions.append({"key": "scholar", "match": {"value": scholar_filter}})
+
+    if refs:
+        # Use the first resolved reference for now; future: multi-ref OR filter
+        ref = refs[0]
+        conditions.append({"key": "surah_number", "match": {"value": ref.surah}})
+        if not ref.is_surah_only():
+            conditions.append({"key": "ayah_start", "range": {"gte": ref.ayah_start}})
+            conditions.append({"key": "ayah_end", "range": {"lte": ref.ayah_end}})
+
+    return {"must": conditions} if conditions else None
+
+
+# ── Step 4: Vector retrieval ──────────────────────────────────────────────────
+
+def embed_query_text(text: str, clients: dict) -> list[float]:
+    model = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
+    resp = clients["openai"].embeddings.create(input=[text], model=model)
+    return resp.data[0].embedding
+
+
+def retrieve_chunks(
+    qdrant_client,
+    collection: str,
+    embedding: list[float],
+    top_k: int,
+    qdrant_filter: dict | None,
+) -> list[dict]:
+    from qdrant_client.models import Filter
+
+    hits = qdrant_client.search(
+        collection_name=collection,
+        query_vector=embedding,
+        limit=top_k,
+        with_payload=True,
+        query_filter=Filter(**qdrant_filter) if qdrant_filter else None,
+    )
+    return [
+        {
+            "score": hit.score,
+            "scholar": hit.payload.get("scholar", "unknown"),
+            "surah_number": hit.payload.get("surah_number"),
+            "ayah_start": hit.payload.get("ayah_start"),
+            "ayah_end": hit.payload.get("ayah_end"),
+            "content": hit.payload.get("content", ""),
+            "source_title": hit.payload.get("source_title", ""),
+            "english_text": hit.payload.get("english_text", ""),
+        }
+        for hit in hits
+    ]
+
+
+# ── Step 5: Prompt assembly ───────────────────────────────────────────────────
+
+SYSTEM_PROMPT = """\
+You are a scholarly Quran commentary assistant. Your role is to explain the
+meaning of Quranic verses by drawing on classical and modern Tafsir sources.
+
+Rules:
+1. Always cite your sources using the format [Scholar Name on Surah:Ayah].
+   For example: [Ibn Kathir on 2:255] or [Maududi on Al-Baqarah intro].
+2. If multiple scholars are in the context, present multiple perspectives.
+3. Do not issue religious rulings (fatwas). If asked for one, redirect the
+   user to consult a qualified scholar.
+4. Be clear when scholars disagree. Do not present one view as the only view.
+5. Your response should be clear, informative, and grounded in the provided
+   Tafsir excerpts. Do not fabricate citations or commentary.
+6. Write in a respectful, scholarly tone appropriate for a diverse audience.
+"""
+
+
+def _scholar_display(scholar: str) -> str:
+    mapping = {
+        "ibn_kathir": "Ibn Kathir",
+        "maududi": "Maududi",
+        "tabari": "Al-Tabari",
+        "jalalayn": "Al-Jalalayn",
+        "qurtubi": "Al-Qurtubi",
+        "ibn_ashur": "Ibn Ashur",
+    }
+    return mapping.get(scholar, scholar.replace("_", " ").title())
+
+
+def assemble_prompt(query: str, chunks: list[dict]) -> str:
+    context_blocks: list[str] = []
+    for chunk in chunks:
+        scholar = _scholar_display(chunk["scholar"])
+        surah = chunk["surah_number"]
+        start = chunk["ayah_start"]
+        end = chunk["ayah_end"]
+        ref = f"{surah}:{start}" if start == end else f"{surah}:{start}-{end}"
+        header = f"[{scholar} on {ref}]"
+        if chunk.get("english_text"):
+            header += f'\nAyah translation: "{chunk["english_text"]}"'
+        context_blocks.append(f"{header}\n{chunk['content']}")
+
+    context = "\n\n---\n\n".join(context_blocks)
+    return f"Tafsir context:\n\n{context}\n\nUser question: {query}"
+
+
+# ── Step 6: LLM generation ────────────────────────────────────────────────────
+
+def generate(prompt: str, provider: Provider, clients: dict, verbose: bool) -> str:
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+        logger.debug("Prompt length: %d chars", len(prompt))
+
+    if provider == "anthropic":
+        msg = clients["anthropic"].messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=MAX_TOKENS,
+            temperature=TEMPERATURE,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return msg.content[0].text.strip()
+    else:
+        resp = clients["openai"].chat.completions.create(
+            model=OPENAI_MODEL,
+            max_tokens=MAX_TOKENS,
+            temperature=TEMPERATURE,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return resp.choices[0].message.content.strip()
+
+
+# ── Step 7: Post-processing ───────────────────────────────────────────────────
+
+@dataclass
+class RAGResponse:
+    text: str
+    citations: list[str]
+    intent: str
+    confidence: Literal["high", "low"]
+    chunks_used: int
+
+
+def extract_citations(text: str) -> list[str]:
+    """Extract [Scholar on Surah:Ayah] citation markers from the response."""
+    return re.findall(r"\[[^\]]+on\s+[^\]]+\]", text)
+
+
+def post_process(
+    raw_text: str,
+    intent: str,
+    chunks: list[dict],
+    threshold: float = 0.70,
+) -> RAGResponse:
+    citations = extract_citations(raw_text)
+    top_score = max((c["score"] for c in chunks), default=0.0)
+    confidence: Literal["high", "low"] = "high" if top_score >= threshold else "low"
+
+    final_text = raw_text + DISCLAIMER
+    if confidence == "low":
+        final_text = (
+            "*(Note: retrieval confidence is low for this query — "
+            "the following summary may be incomplete.)*\n\n" + final_text
+        )
+
+    return RAGResponse(
+        text=final_text,
+        citations=citations,
+        intent=intent,
+        confidence=confidence,
+        chunks_used=len(chunks),
+    )
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="TafsirBot Python POC RAG pipeline.")
+    parser.add_argument("query", help="The question to ask.")
+    parser.add_argument(
+        "--provider",
+        choices=["anthropic", "openai"],
+        default=os.environ.get("LLM_PROVIDER", "anthropic"),
+        help="LLM provider (default: LLM_PROVIDER env var or 'anthropic').",
+    )
+    parser.add_argument(
+        "--scholar",
+        default=None,
+        help="Restrict retrieval to a specific scholar (e.g. ibn_kathir, maududi).",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=TOP_K,
+        help=f"Number of chunks to retrieve (default: {TOP_K}).",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print debug information including retrieved chunks.",
+    )
+    args = parser.parse_args()
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    # ── Build clients ─────────────────────────────────────────────────────────
+    clients: dict = {}
+
+    if args.provider == "anthropic" or True:  # always need openai for embeddings
+        import openai as _openai
+        clients["openai"] = _openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+    if args.provider == "anthropic":
+        import anthropic as _anthropic
+        clients["anthropic"] = _anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    from qdrant_client import QdrantClient
+    qdrant = QdrantClient(
+        host=os.environ.get("QDRANT_HOST", "localhost"),
+        port=int(os.environ.get("QDRANT_PORT", 6333)),
+    )
+    collection = os.environ.get("QDRANT_COLLECTION", "tafsir")
+
+    from utils.quran_ref import QuranRef
+    from utils.ayah_resolver import AyahResolver
+
+    qr = QuranRef()
+    resolver = AyahResolver(qr)
+
+    # ── Pipeline ──────────────────────────────────────────────────────────────
+    print()
+
+    # Step 1: Normalize
+    query = normalize(args.query)
+
+    # Step 2: Classify intent
+    intent = classify_intent(query, args.provider, clients)
+
+    if intent == "fiqh_ruling":
+        print(FIQH_REFUSAL)
+        return
+
+    if intent == "off_topic":
+        print(OFF_TOPIC_REFUSAL)
+        return
+
+    # Step 3: Resolve Ayah references
+    refs = resolver.resolve(query)
+    if args.verbose and refs:
+        print(f"[refs] {refs}\n")
+
+    qdrant_filter = build_qdrant_filter(refs, args.scholar)
+
+    # Step 4: Embed + retrieve
+    embedding = embed_query_text(query, clients)
+    chunks = retrieve_chunks(qdrant, collection, embedding, args.top_k, qdrant_filter)
+
+    if args.verbose:
+        print(f"[retrieved {len(chunks)} chunks]")
+        for c in chunks:
+            print(
+                f"  [{c['scholar']}] {c['surah_number']}:{c['ayah_start']} "
+                f"score={c['score']:.3f} — {c['content'][:80]}..."
+            )
+        print()
+
+    if not chunks:
+        print("No relevant Tafsir passages found for this query.")
+        print(DISCLAIMER)
+        return
+
+    # Step 5: Assemble prompt
+    prompt = assemble_prompt(query, chunks)
+
+    # Step 6: Generate
+    raw_response = generate(prompt, args.provider, clients, args.verbose)
+
+    # Step 7: Post-process
+    result = post_process(raw_response, intent, chunks)
+
+    print(result.text)
+
+    if args.verbose:
+        print(f"\n[citations: {result.citations}]")
+        print(f"[confidence: {result.confidence}  chunks: {result.chunks_used}  intent: {result.intent}]")
+
+
+if __name__ == "__main__":
+    main()
