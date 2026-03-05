@@ -1,1 +1,91 @@
+TafsirBot
+=========
 
+An AI-powered Quranic commentary assistant that retrieves and synthesizes explanations from classical and modern Tafsir scholarship using a RAG (Retrieval-Augmented Generation) pipeline.
+
+Delivered across Telegram, web chat, WhatsApp, and X (Twitter).
+
+
+WHAT IT DOES
+------------
+A user asks a question about a Quranic verse — e.g. "What does 2:255 (Ayat al-Kursi) mean?" or
+"What do scholars say about the concept of tawakkul?" — and TafsirBot retrieves relevant passages
+from multiple authoritative Tafsir works, synthesizes a cited response, and returns it with source
+attribution and a scholarly disclaimer.
+
+It does not issue fatwas or religious rulings. Every response cites its sources.
+
+
+TAFSIR CORPUS
+-------------
+Phase 1 (Primary):
+  - Ibn Kathir — Tafsir al-Quran al-Azim (14th c.) — hadith-grounded, widely trusted
+  - Maududi — Tafhim al-Quran (20th c.) — accessible modern contextual commentary
+
+Later phases add Al-Tabari, Al-Qurtubi, Al-Jalalayn, and Ibn Ashur.
+
+See docs/TAFSIR-CHOICES.md for per-tafsir analysis and RAG pipeline considerations.
+
+
+ARCHITECTURE
+------------
+Ingestion (offline)
+  Raw tafsir text → clean.py → chunk.py → embed.py → upsert.py → Qdrant
+
+Query path (live)
+  User message → n8n channel workflow → n8n RAG sub-workflow:
+    1. Input normalization
+    2. Intent classification (tafsir / general_islamic / fiqh_ruling / off_topic)
+    3. Ayah reference resolution
+    4. Vector retrieval from Qdrant (metadata-filtered)
+    5. Prompt assembly
+    6. LLM generation (Claude Sonnet)
+    7. Post-processing + citation formatting
+  → Response delivered to originating channel
+
+Infrastructure: Docker Compose on a single VPS (Qdrant + n8n + Postgres + Nginx).
+
+
+GETTING STARTED
+---------------
+Prerequisites: Docker, Docker Compose, Python 3.11+, Node.js 18+
+
+1. Clone with submodules:
+     git clone --recurse-submodules <repo-url>
+     cd TafsirBot
+
+2. Build Quran JSON data:
+     cd sources/quran-json && npm install && npm run build && cd ../..
+
+3. Copy and fill environment variables:
+     cp .env.example .env
+     # Edit .env with your API keys
+
+4. Start infrastructure:
+     docker compose up -d
+
+5. Run ingestion pipeline (after sourcing tafsir texts):
+     cd scripts/ingestion
+     python clean.py
+     python chunk.py
+     python embed.py
+     python upsert.py
+
+6. Import n8n workflows from n8n/workflows/ and activate them.
+
+Full architecture documentation: sources/README.md
+Agent/coding guidelines: AGENTS.md, CLAUDE.md
+
+
+GUARDRAILS
+----------
+- Every response includes a disclaimer: responses are AI-assisted summaries, not fatwas.
+- Requests for religious rulings are refused and redirected to qualified scholars.
+- Off-topic queries are politely declined.
+- Low-confidence responses are held for human review before publication on X.
+- All published responses cite at least one Tafsir source.
+
+
+PROJECT STATUS
+--------------
+Phase 1 in progress. See sources/README.md (TODO section) for the full task list.
