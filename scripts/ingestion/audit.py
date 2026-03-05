@@ -1,20 +1,21 @@
 """
 audit.py — Spot-check retrieval quality against a test query set.
 
-Embeds each test query, retrieves top-K chunks from Qdrant, and prints a
-report. Flags queries where the best cosine score falls below the configured
-threshold (default: 0.70).
+Embeds each test query with both dense (OpenAI) and sparse (BM42) models,
+then retrieves top-K chunks via Qdrant hybrid prefetch+RRF fusion.
+
+Scores are RRF rank-based (not cosine similarity), so they are shown as
+rank indicators only — no hard threshold is applied in hybrid mode.
 
 Usage:
     python audit.py
-    python audit.py --top-k 8 --threshold 0.65
+    python audit.py --top-k 8
     python audit.py --query "What does Ibn Kathir say about 2:255?"
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sys
@@ -35,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger("audit")
 
 DEFAULT_TOP_K = 5
-DEFAULT_THRESHOLD = float(os.environ.get("AUDIT_SCORE_THRESHOLD", "0.70"))
+SPARSE_MODEL_NAME = "Qdrant/bm42-all-minilm-l6-v2-attentions"
 
 # ── Test query set ────────────────────────────────────────────────────────────
 # 50 queries spanning: named ayahs, numeric refs, thematic, cross-verse,
@@ -112,25 +113,47 @@ class QueryResult:
     query: str
     top_score: float
     top_chunks: list[dict] = field(default_factory=list)
-    low_confidence: bool = False
 
 
-def embed_query(client, text: str, model: str) -> list[float]:
-    response = client.embeddings.create(input=[text], model=model)
+def embed_dense(openai_client, text: str, model: str) -> list[float]:
+    response = openai_client.embeddings.create(input=[text], model=model)
     return response.data[0].embedding
 
 
-def retrieve(qdrant_client, collection: str, embedding: list[float], top_k: int) -> list[dict]:
+def embed_sparse(sparse_model, text: str):
+    return next(sparse_model.embed([text]))
+
+
+def retrieve(
+    qdrant_client,
+    collection: str,
+    dense_emb: list[float],
+    sparse_emb,
+    top_k: int,
+) -> list[dict]:
+    from qdrant_client.models import Fusion, FusionQuery, Prefetch, SparseVector
+
     result = qdrant_client.query_points(
         collection_name=collection,
-        query=embedding,
+        prefetch=[
+            Prefetch(query=dense_emb, using="dense", limit=top_k * 4),
+            Prefetch(
+                query=SparseVector(
+                    indices=sparse_emb.indices.tolist(),
+                    values=sparse_emb.values.tolist(),
+                ),
+                using="sparse",
+                limit=top_k * 4,
+            ),
+        ],
+        query=FusionQuery(fusion=Fusion.RRF),
         limit=top_k,
         with_payload=True,
     )
     hits = result.points
     return [
         {
-            "score": round(hit.score, 4),
+            "score": round(hit.score, 6),
             "scholar": hit.payload.get("scholar"),
             "surah": hit.payload.get("surah_number"),
             "ayah_start": hit.payload.get("ayah_start"),
@@ -147,65 +170,46 @@ def run_audit(
     qdrant_client,
     collection: str,
     model: str,
+    sparse_model,
     queries: list[str],
     top_k: int,
-    threshold: float,
 ) -> None:
-    results: list[QueryResult] = []
     refuse_queries = [q for q in queries if q.startswith("REFUSE:")]
     normal_queries = [q for q in queries if not q.startswith("REFUSE:")]
 
-    # ── Normal queries ────────────────────────────────────────────────────────
     print("\n" + "=" * 72)
-    print(f"AUDIT REPORT  |  collection={collection}  top_k={top_k}  threshold={threshold}")
+    print(f"AUDIT REPORT  |  collection={collection}  top_k={top_k}  mode=hybrid-RRF")
     print("=" * 72)
 
-    low_confidence_queries: list[str] = []
+    results: list[QueryResult] = []
 
     for query in normal_queries:
-        embedding = embed_query(openai_client, query, model)
-        chunks = retrieve(qdrant_client, collection, embedding, top_k)
+        dense_emb = embed_dense(openai_client, query, model)
+        sparse_emb = embed_sparse(sparse_model, query)
+        chunks = retrieve(qdrant_client, collection, dense_emb, sparse_emb, top_k)
         top_score = chunks[0]["score"] if chunks else 0.0
-        low_conf = top_score < threshold
 
-        result = QueryResult(
-            query=query,
-            top_score=top_score,
-            top_chunks=chunks,
-            low_confidence=low_conf,
-        )
+        result = QueryResult(query=query, top_score=top_score, top_chunks=chunks)
         results.append(result)
 
-        flag = " ⚠  LOW" if low_conf else "    OK"
-        print(f"\n{flag}  [{top_score:.3f}]  {query}")
+        print(f"\n     [{top_score:.6f}]  {query}")
         for i, chunk in enumerate(chunks[:3], 1):
             print(
                 f"      {i}. [{chunk['scholar']}] "
                 f"{chunk['surah']}:{chunk['ayah_start']}–{chunk['ayah_end']} "
-                f"({chunk['chunk_type']})  score={chunk['score']}"
+                f"({chunk['chunk_type']})  rrf={chunk['score']}"
             )
             print(f"         {chunk['snippet']}...")
 
-        if low_conf:
-            low_confidence_queries.append(query)
-
     # ── Summary ───────────────────────────────────────────────────────────────
     total = len(results)
-    low = len(low_confidence_queries)
     scores = [r.top_score for r in results]
     mean_score = sum(scores) / len(scores) if scores else 0.0
 
     print("\n" + "=" * 72)
     print("SUMMARY")
     print(f"  Total queries:     {total}")
-    print(f"  Low-confidence:    {low} ({100*low/total:.0f}%)")
-    print(f"  Mean top score:    {mean_score:.3f}")
-    print(f"  Threshold:         {threshold}")
-
-    if low_confidence_queries:
-        print("\nLow-confidence queries to investigate:")
-        for q in low_confidence_queries:
-            print(f"  - {q}")
+    print(f"  Mean top RRF score:{mean_score:.6f}  (rank-based, not cosine)")
 
     print(f"\nRefusal edge cases to test manually ({len(refuse_queries)} queries):")
     for q in refuse_queries:
@@ -214,9 +218,8 @@ def run_audit(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Audit retrieval quality.")
+    parser = argparse.ArgumentParser(description="Audit retrieval quality (hybrid RRF).")
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
-    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
     parser.add_argument(
         "--query",
         help="Run a single ad-hoc query instead of the full test set.",
@@ -224,6 +227,7 @@ def main() -> None:
     args = parser.parse_args()
 
     import openai
+    from fastembed import SparseTextEmbedding
     from qdrant_client import QdrantClient
 
     openai_client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
@@ -234,6 +238,9 @@ def main() -> None:
     collection = os.environ.get("QDRANT_COLLECTION", "tafsir")
     model = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 
+    logger.info("Loading sparse model '%s'…", SPARSE_MODEL_NAME)
+    sparse_model = SparseTextEmbedding(SPARSE_MODEL_NAME)
+
     queries = [args.query] if args.query else TEST_QUERIES
 
     run_audit(
@@ -241,9 +248,9 @@ def main() -> None:
         qdrant_client=qdrant_client,
         collection=collection,
         model=model,
+        sparse_model=sparse_model,
         queries=queries,
         top_k=args.top_k,
-        threshold=args.threshold,
     )
 
 

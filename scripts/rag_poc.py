@@ -154,7 +154,7 @@ def build_qdrant_filter(refs, scholar_filter: str | None) -> dict | None:
     return {"must": conditions} if conditions else None
 
 
-# ── Step 4: Vector retrieval ──────────────────────────────────────────────────
+# ── Step 4: Hybrid retrieval ──────────────────────────────────────────────────
 
 def embed_query_text(text: str, clients: dict) -> list[float]:
     model = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
@@ -165,18 +165,34 @@ def embed_query_text(text: str, clients: dict) -> list[float]:
 def retrieve_chunks(
     qdrant_client,
     collection: str,
-    embedding: list[float],
+    query_text: str,
+    dense_emb: list[float],
+    sparse_model,
     top_k: int,
     qdrant_filter: dict | None,
 ) -> list[dict]:
-    from qdrant_client.models import Filter
+    from qdrant_client.models import Filter, Fusion, FusionQuery, Prefetch, SparseVector
 
-    hits = qdrant_client.search(
+    sparse_emb = next(sparse_model.embed([query_text]))
+    filt = Filter(**qdrant_filter) if qdrant_filter else None
+
+    result = qdrant_client.query_points(
         collection_name=collection,
-        query_vector=embedding,
+        prefetch=[
+            Prefetch(query=dense_emb, using="dense", limit=top_k * 4, filter=filt),
+            Prefetch(
+                query=SparseVector(
+                    indices=sparse_emb.indices.tolist(),
+                    values=sparse_emb.values.tolist(),
+                ),
+                using="sparse",
+                limit=top_k * 4,
+                filter=filt,
+            ),
+        ],
+        query=FusionQuery(fusion=Fusion.RRF),
         limit=top_k,
         with_payload=True,
-        query_filter=Filter(**qdrant_filter) if qdrant_filter else None,
     )
     return [
         {
@@ -189,7 +205,7 @@ def retrieve_chunks(
             "source_title": hit.payload.get("source_title", ""),
             "english_text": hit.payload.get("english_text", ""),
         }
-        for hit in hits
+        for hit in result.points
     ]
 
 
@@ -345,6 +361,8 @@ def main() -> None:
         logging.getLogger().setLevel(logging.DEBUG)
 
     # ── Build clients ─────────────────────────────────────────────────────────
+    from fastembed import SparseTextEmbedding
+
     clients: dict = {}
 
     if args.provider == "anthropic" or True:  # always need openai for embeddings
@@ -367,6 +385,8 @@ def main() -> None:
 
     qr = QuranRef()
     resolver = AyahResolver(qr)
+
+    sparse_model = SparseTextEmbedding("Qdrant/bm42-all-minilm-l6-v2-attentions")
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
     print()
@@ -393,8 +413,8 @@ def main() -> None:
     qdrant_filter = build_qdrant_filter(refs, args.scholar)
 
     # Step 4: Embed + retrieve
-    embedding = embed_query_text(query, clients)
-    chunks = retrieve_chunks(qdrant, collection, embedding, args.top_k, qdrant_filter)
+    dense_emb = embed_query_text(query, clients)
+    chunks = retrieve_chunks(qdrant, collection, query, dense_emb, sparse_model, args.top_k, qdrant_filter)
 
     if args.verbose:
         print(f"[retrieved {len(chunks)} chunks]")
@@ -416,8 +436,8 @@ def main() -> None:
     # Step 6: Generate
     raw_response = generate(prompt, args.provider, clients, args.verbose)
 
-    # Step 7: Post-process
-    result = post_process(raw_response, intent, chunks)
+    # Step 7: Post-process (threshold=0 — RRF scores are rank-based, not cosine)
+    result = post_process(raw_response, intent, chunks, threshold=0.0)
 
     print(result.text)
 

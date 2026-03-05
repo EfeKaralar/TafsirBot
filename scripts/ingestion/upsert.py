@@ -6,14 +6,14 @@ Qdrant collection. The operation is idempotent: a deterministic point ID is
 derived from (scholar, surah_number, ayah_start, chunk_type), so re-runs
 overwrite existing points cleanly.
 
-IMPORTANT: The collection is created on first run with the correct vector size
-(3072 for text-embedding-3-large). If you switch embedding models, drop and
-recreate the collection — never mix vector sizes.
+IMPORTANT: The collection uses named dense+sparse vectors for hybrid BM42+cosine
+retrieval. If you switch embedding models, use --recreate to drop and rebuild.
 
 Usage:
     python upsert.py --scholar ibn_kathir
     python upsert.py --scholar maududi
     python upsert.py --scholar all
+    python upsert.py --scholar all --recreate
     python upsert.py --scholar ibn_kathir --batch-size 200
 """
 
@@ -47,6 +47,7 @@ KNOWN_SCHOLARS = ["ibn_kathir", "maududi", "tabari", "jalalayn", "qurtubi", "ibn
 
 VECTOR_SIZE = 3072       # text-embedding-3-large output dimensions
 DEFAULT_BATCH_SIZE = 200
+SPARSE_MODEL_NAME = "Qdrant/bm42-all-minilm-l6-v2-attentions"
 
 
 def _point_id(scholar: str, surah: int, ayah_start: int, chunk_type: str) -> int:
@@ -57,29 +58,55 @@ def _point_id(scholar: str, surah: int, ayah_start: int, chunk_type: str) -> int
     return int(digest[:15], 16)
 
 
-def _ensure_collection(client, collection: str) -> None:
-    """Create the Qdrant collection if it does not already exist."""
-    from qdrant_client.models import Distance, VectorParams
+def _ensure_collection(client, collection: str, recreate: bool) -> None:
+    """Create the Qdrant collection, optionally dropping an existing one first."""
+    from qdrant_client.models import (
+        Distance,
+        SparseIndexParams,
+        SparseVectorParams,
+        VectorParams,
+    )
 
     existing = {c.name for c in client.get_collections().collections}
+
+    if recreate and collection in existing:
+        logger.info("--recreate: dropping existing collection '%s'", collection)
+        client.delete_collection(collection_name=collection)
+        existing.discard(collection)
+
     if collection in existing:
         logger.debug("Collection '%s' already exists", collection)
         return
 
-    logger.info("Creating Qdrant collection '%s' (size=%d, cosine)", collection, VECTOR_SIZE)
+    logger.info(
+        "Creating Qdrant collection '%s' (dense size=%d cosine + sparse BM42)",
+        collection,
+        VECTOR_SIZE,
+    )
     client.create_collection(
         collection_name=collection,
-        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+        vectors_config={"dense": VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE)},
+        sparse_vectors_config={
+            "sparse": SparseVectorParams(
+                index=SparseIndexParams(on_disk=False)
+            )
+        },
     )
 
 
-def process_scholar(scholar: str, client, collection: str, batch_size: int) -> None:
+def process_scholar(
+    scholar: str,
+    client,
+    collection: str,
+    batch_size: int,
+    sparse_model,
+) -> None:
     input_file = EMBEDDED_DIR / f"{scholar}.jsonl"
     if not input_file.exists():
         logger.warning("Embedded file not found: %s — skipping", input_file)
         return
 
-    from qdrant_client.models import PointStruct
+    from qdrant_client.models import PointStruct, SparseVector
 
     records: list[dict] = []
     with input_file.open(encoding="utf-8") as f:
@@ -97,22 +124,40 @@ def process_scholar(scholar: str, client, collection: str, batch_size: int) -> N
 
     for batch_idx in range(0, len(records), batch_size):
         batch = records[batch_idx: batch_idx + batch_size]
-        points: list[PointStruct] = []
 
-        for r in batch:
-            embedding = r.pop("embedding")  # don't store vector in payload
+        # Compute sparse embeddings for the whole batch at once
+        contents = [r.get("content", "") for r in batch]
+        sparse_embeddings = list(sparse_model.embed(contents))
+
+        points: list[PointStruct] = []
+        for r, sparse in zip(batch, sparse_embeddings):
+            dense_embedding = r.pop("embedding")  # don't store vector in payload
             point_id = _point_id(
                 r["scholar"],
                 r["surah_number"],
                 r["ayah_start"],
                 r.get("chunk_type", "verse"),
             )
-            # Payload is everything except the raw content and isnad (stored separately)
             payload = {k: v for k, v in r.items() if k != "embedding"}
-            points.append(PointStruct(id=point_id, vector=embedding, payload=payload))
+            points.append(
+                PointStruct(
+                    id=point_id,
+                    vector={
+                        "dense": dense_embedding,
+                        "sparse": SparseVector(
+                            indices=sparse.indices.tolist(),
+                            values=sparse.values.tolist(),
+                        ),
+                    },
+                    payload=payload,
+                )
+            )
 
         batch_num = batch_idx // batch_size + 1
-        logger.info("[%s] upserting batch %d/%d (%d points)", scholar, batch_num, total_batches, len(points))
+        logger.info(
+            "[%s] upserting batch %d/%d (%d points)",
+            scholar, batch_num, total_batches, len(points),
+        )
         client.upsert(collection_name=collection, points=points, wait=True)
         upserted += len(points)
 
@@ -133,20 +178,29 @@ def main() -> None:
         default=DEFAULT_BATCH_SIZE,
         help=f"Points per Qdrant upsert call (default: {DEFAULT_BATCH_SIZE}).",
     )
+    parser.add_argument(
+        "--recreate",
+        action="store_true",
+        help="Drop and recreate the Qdrant collection before upserting.",
+    )
     args = parser.parse_args()
 
+    from fastembed import SparseTextEmbedding
     from qdrant_client import QdrantClient
 
     host = os.environ.get("QDRANT_HOST", "localhost")
     port = int(os.environ.get("QDRANT_PORT", 6333))
     collection = os.environ.get("QDRANT_COLLECTION", "tafsir")
 
+    logger.info("Loading sparse model '%s' (downloads ~130MB on first run)…", SPARSE_MODEL_NAME)
+    sparse_model = SparseTextEmbedding(SPARSE_MODEL_NAME)
+
     client = QdrantClient(host=host, port=port)
-    _ensure_collection(client, collection)
+    _ensure_collection(client, collection, recreate=args.recreate)
 
     scholars = KNOWN_SCHOLARS if args.scholar == "all" else [args.scholar]
     for scholar in scholars:
-        process_scholar(scholar, client, collection, args.batch_size)
+        process_scholar(scholar, client, collection, args.batch_size, sparse_model)
 
 
 if __name__ == "__main__":
