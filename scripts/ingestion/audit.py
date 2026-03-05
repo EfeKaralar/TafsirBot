@@ -121,12 +121,13 @@ def embed_query(client, text: str, model: str) -> list[float]:
 
 
 def retrieve(qdrant_client, collection: str, embedding: list[float], top_k: int) -> list[dict]:
-    hits = qdrant_client.search(
+    result = qdrant_client.query_points(
         collection_name=collection,
-        query_vector=embedding,
+        query=embedding,
         limit=top_k,
         with_payload=True,
     )
+    hits = result.points
     return [
         {
             "score": round(hit.score, 4),

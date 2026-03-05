@@ -25,6 +25,8 @@ import sys
 import time
 from pathlib import Path
 
+import tiktoken
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dotenv import load_dotenv
@@ -47,6 +49,18 @@ KNOWN_SCHOLARS = ["ibn_kathir", "maududi", "tabari", "jalalayn", "qurtubi", "ibn
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_RETRY_ATTEMPTS = 5
 DEFAULT_RETRY_BASE_DELAY = 2.0  # seconds; doubles on each retry
+TOKEN_LIMIT = 8191  # text-embedding-3-large max input tokens
+
+_tokenizer = tiktoken.get_encoding("cl100k_base")
+
+
+def _truncate(text: str) -> str:
+    """Truncate text to TOKEN_LIMIT tokens if necessary."""
+    tokens = _tokenizer.encode(text)
+    if len(tokens) <= TOKEN_LIMIT:
+        return text
+    logger.warning("Truncating chunk from %d to %d tokens", len(tokens), TOKEN_LIMIT)
+    return _tokenizer.decode(tokens[:TOKEN_LIMIT])
 
 
 def _embed_batch(client, texts: list[str], model: str) -> list[list[float]]:
@@ -111,7 +125,7 @@ def process_scholar(scholar: str, client, model: str, batch_size: int) -> None:
     with output_file.open("a", encoding="utf-8") as fout:
         for batch_idx in range(0, len(records_to_embed), batch_size):
             batch = records_to_embed[batch_idx: batch_idx + batch_size]
-            texts = [r["content"] for r in batch]
+            texts = [_truncate(r["content"]) for r in batch]
             batch_num = batch_idx // batch_size + 1
 
             logger.info(
