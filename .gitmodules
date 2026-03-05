@@ -1,3 +1,6 @@
 [submodule "sources/quran-json"]
 	path = sources/quran-json
 	url = https://github.com/risan/quran-json.git
+[submodule "sources/maududi-json"]
+	path = sources/maududi-json
+	url = https://github.com/EfeKaralar/maududi-json.git
