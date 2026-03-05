@@ -103,7 +103,7 @@ Each chunk carries the following metadata:
 | `scholar` | Identifier string, e.g. `ibn_kathir`, `maududi`, `nuh_keller` |
 | `language` | ISO 639-1 code: `en`, `ar` |
 | `source_title` | Full title of the source work |
-| `corpus_type` | `tafsir`, `fiqh`, or `fatwa` |
+| `corpus_type` | `tafsir`, `fiqh`, `fatwa`, or `hadith` |
 | `madhab` | `hanafi`, `maliki`, `shafii`, `hanbali`, `multi`, or `unspecified` |
 | `english_text` | English translation of the Ayah(s) covered (Tafsir chunks only) |
 | `arabic_text` | Arabic text of the Ayah(s) covered (Tafsir chunks only) |
@@ -142,7 +142,7 @@ Qdrant is chosen for its native metadata filtering, strong n8n integration, and 
 | 1–2 (now) | `tafsir` | `text-embedding-3-large` + BM42 | All English sources: Tafsir, fiqh, fatawa |
 | 3+ (Arabic) | `tafsir_ar` | `intfloat/multilingual-e5-large` + Arabic sparse model | Arabic-primary sources |
 
-A **single collection** is used for all English content regardless of corpus type (Tafsir, fiqh, fatawa). This enables natural cross-corpus retrieval: a question about a verse's legal implication can surface both a Tafsir chunk and a fiqh ruling in one query. The `corpus_type` and `madhab` metadata fields allow filtering when needed.
+A **single collection** is used for all English content regardless of corpus type (Tafsir, fiqh, fatawa, hadith). This enables natural cross-corpus retrieval: a question about a verse's legal implication can surface both a Tafsir chunk and a fiqh ruling in one query. The `corpus_type` and `madhab` metadata fields allow filtering when needed.
 
 When Arabic sources are added (Phase 3+), a **separate collection** (`tafsir_ar`) is required — not optional — because mixing dense embeddings from different models in one collection makes retrieval meaningless. A language-routing layer in the query pipeline will fan out to both collections and merge results.
 
@@ -285,7 +285,7 @@ All components run on a single VPS using Docker Compose. The recommended minimum
 
 ## Corpus Selection
 
-The corpus covers three text types: **Tafsir** (Quranic commentary), **fiqh** (jurisprudence manuals and encyclopedias), and **fatawa** (legal opinions). All four Sunni madhabs are represented; the bot is madhab-agnostic and presents multiple positions where scholars differ.
+The corpus covers four text types: **Tafsir** (Quranic commentary), **fiqh** (jurisprudence manuals and encyclopedias), **fatawa** (legal opinions), and **hadith** (prophetic traditions with grading). All four Sunni madhabs are represented; the bot is madhab-agnostic and presents multiple positions where scholars differ.
 
 - See [docs/TAFSIR-CHOICES.md](docs/TAFSIR-CHOICES.md) for per-source analysis of Tafsir works (current) and fiqh/fatawa sources (in progress).
 - See [docs/RESEARCH-AGENT-BRIEF.md](docs/RESEARCH-AGENT-BRIEF.md) for the brief used to research and evaluate fiqh/fatawa candidate sources.

@@ -139,6 +139,57 @@ For each candidate source below, evaluate and document:
 - Any other accessible English-language Islamic legal scholarship you identify as
   high-value for this use case
 
+### Hadith Collections
+
+Hadith are a critical corpus category. Many scholarly answers to Islamic questions
+cite hadith as primary evidence, fiqh rulings are built on hadith, and Tafsir works
+(especially Ibn Kathir) constantly cite hadith to support commentary. Each hadith is
+a natural, self-contained chunk unit, making this corpus particularly well-suited for
+RAG with minimal chunking ambiguity.
+
+**Primary acquisition method:** Sunnah.com provides a free structured API
+(`sunnah.com/api`) with JSON responses, English translations, Arabic text, hadith
+grades, and full bibliographic metadata for all major collections. This is strongly
+preferred over scraping or PDF processing.
+
+**Hadith grading is a required metadata field.** Every hadith chunk must carry its
+grade (`sahih`, `hasan`, `da'if`, `mawdu`, or `ungraded`). This matters for two
+reasons: (1) the LLM should include the grade when citing a hadith so the user knows
+its scholarly weight; (2) for fiqh-adjacent queries, weak (*da'if*) or fabricated
+(*mawdu'*) hadith should be surfaced with explicit caveats or optionally filtered out.
+
+**Chunk metadata for hadith** (in addition to the standard fields):
+
+| Field | Values | Notes |
+|---|---|---|
+| `corpus_type` | `hadith` | New corpus_type value |
+| `hadith_collection` | e.g. `bukhari`, `muslim`, `abu_dawud` | Slug identifier |
+| `hadith_number` | int | Collection-specific numbering |
+| `chapter_title` | str | Book/chapter name for context |
+| `grade` | `sahih`, `hasan`, `da_if`, `mawdu`, `ungraded` | Scholarly authentication grade |
+| `madhab` | `multi` | Hadith are cross-madhab by nature |
+
+Evaluate each of the following collections and assess: Sunnah.com API coverage,
+English translation quality, completeness, and RAG suitability.
+
+- **Sahih al-Bukhari** — most authoritative; ~7,563 hadith; full English translation
+  widely available; highest priority
+- **Sahih Muslim** — second most authoritative; ~7,500 hadith; pairs with Bukhari
+  to cover the most-cited hadith in scholarly literature
+- **Sunan Abu Dawud** — strong fiqh orientation; many hadith used as evidence for
+  legal rulings; ~5,274 hadith
+- **Jami at-Tirmidhi** — includes Tirmidhi's own grading commentary per hadith;
+  valuable because the grading notes are themselves scholarly opinion worth chunking
+- **Sunan an-Nasa'i** — known for precision in hadith criticism; ~5,758 hadith
+- **Sunan Ibn Majah** — completes the Kutub al-Sittah; assess overlap with other
+  collections and whether marginal coverage justifies inclusion
+- **Muwatta Malik** — the earliest major hadith collection; also functions as a
+  Maliki fiqh text; assess whether to tag as `corpus_type: hadith` or `fiqh`
+  given its dual nature
+- **Musnad Ahmad** — very large (~27,000+ hadith); assess whether selective
+  ingestion (e.g. only sahih/hasan-graded hadith) is practical via Sunnah.com API
+- Any other collections available via the Sunnah.com API worth evaluating
+
 ---
 
 ## Output Format
@@ -149,8 +200,10 @@ table format already present in that document:
 1. `## Fiqh Manuals` — one subsection per source
 2. `## Fiqh Encyclopedias` — one subsection per source
 3. `## Fatwa Databases` — one subsection per source
-4. `## Phase Assignment Summary` — a single table ranking all new sources by phase and
-   priority, with a one-line RAG suitability note per source
+4. `## Hadith Collections` — one subsection per collection; include a grading note
+   and whether Sunnah.com API provides full coverage
+5. `## Phase Assignment Summary` — a single table ranking **all** new sources across
+   all categories by phase and priority, with a one-line RAG suitability note per source
 
 At the top of each new source entry, include a **Phase** and **Priority** badge in the
 table (e.g. `Phase 2 — Priority 1`).
