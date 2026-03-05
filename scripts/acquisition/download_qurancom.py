@@ -117,21 +117,36 @@ def list_tafsirs(language: str = "en") -> list[dict]:
 
 def download_surah(tafsir_id: int, surah: int) -> list[dict]:
     """
-    Fetch all verse-level tafsir records for one surah.
+    Fetch all verse-level tafsir records for one surah, handling pagination.
+
+    The quran.com API returns 10 records per page by default. We iterate
+    through all pages until exhausted.
 
     Returns a list of dicts with keys: verse_key, text (stripped HTML).
     """
     url = f"{BASE_URL}/tafsirs/{tafsir_id}/by_chapter/{surah}"
-    data = _get(url)
-    records = data.get("tafsirs", [])
-    return [
-        {
-            "verse_key": r["verse_key"],          # e.g. "2:255"
-            "text": strip_html(r.get("text") or ""),
-        }
-        for r in records
-        if r.get("text")
-    ]
+    results: list[dict] = []
+    page = 1
+
+    while True:
+        data = _get(url, params={"page": page})
+        records = data.get("tafsirs", [])
+        results.extend(
+            {
+                "verse_key": r["verse_key"],
+                "text": strip_html(r.get("text") or ""),
+            }
+            for r in records
+            if r.get("text")
+        )
+
+        pagination = data.get("pagination", {})
+        if pagination.get("next_page") is None:
+            break
+        page = pagination["next_page"]
+        time.sleep(REQUEST_DELAY)
+
+    return results
 
 
 def parse_verse_key(verse_key: str) -> tuple[int, int]:
