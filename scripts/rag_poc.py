@@ -55,10 +55,11 @@ DISCLAIMER = (
     "scholar for guidance on religious practice.*"
 )
 
-FIQH_REFUSAL = (
-    "I'm not able to provide a religious ruling (fatwa) on this question. "
-    "For guidance on religious practice, please consult a qualified Islamic scholar. "
-    "I can help explain what the Quran says on related topics — would you like that instead?"
+FIQH_NOTE = (
+    "*(This question touches on Islamic jurisprudence (fiqh). "
+    "The following presents what Tafsir scholars say on the relevant Quranic passages — "
+    "it is not a fatwa or personal ruling. For a ruling on your specific situation, "
+    "please consult a qualified Islamic scholar.)*\n\n"
 )
 
 OFF_TOPIC_REFUSAL = (
@@ -92,11 +93,27 @@ Classify the user's query into exactly one of these four intents:
 
 - tafsir: Questions about the meaning, interpretation, or commentary of Quranic verses
   or Islamic concepts that can be answered from Tafsir literature.
-- general_islamic: General questions about Islam that are informational, not requests
-  for rulings. (Answerable but with lower confidence.)
-- fiqh_ruling: Requests for fatwa-style rulings — "Is X halal/haram?", "What is the
-  ruling on Y?", "Am I allowed to Z?" — that require a qualified scholar.
+- general_islamic: General questions about Islam that are informational. This includes
+  asking what scholars say on a topic, historical or legal positions, or how a concept
+  is treated in Islamic tradition — even if the topic is sensitive or jurisprudential
+  in nature (e.g. abortion, alcohol, dogs, music). These are answerable with scholarly
+  information even if they cannot be given a personal ruling.
+- fiqh_ruling: Personal requests for a fatwa framed as a direct question about the
+  user's own action — "Am I allowed to Z?", "Can I do X?", "Is this permissible for
+  me?". The key marker is first-person actionable guidance the user will act on,
+  as opposed to asking what scholars or the Quran say.
 - off_topic: Completely unrelated to Islam or the Quran.
+
+Examples:
+  "Is it halal to eat shellfish?"             → general_islamic
+  "Can I eat shellfish? Is it allowed for me?"→ fiqh_ruling
+  "Can I pray with nail polish?"              → fiqh_ruling
+  "What is the Islamic view on nail polish?"  → general_islamic
+  "What is the position of scholars on dogs?" → general_islamic
+  "What do scholars say about abortion?"      → general_islamic
+  "What does the Quran say about wine?"       → tafsir
+  "Who was Ibn Kathir?"                       → general_islamic
+  "What is the weather today?"                → off_topic
 
 Reply with ONLY the intent word, nothing else.
 """
@@ -342,7 +359,7 @@ def main() -> None:
     parser.add_argument(
         "--scholar",
         default=None,
-        help="Restrict retrieval to a specific scholar (e.g. ibn_kathir, maududi).",
+        help="Restrict retrieval to a specific scholar (e.g. ibn_kathir, maududi). Use 'all' or omit for no filter.",
     )
     parser.add_argument(
         "--top-k",
@@ -397,20 +414,20 @@ def main() -> None:
     # Step 2: Classify intent
     intent = classify_intent(query, args.provider, clients)
 
-    if intent == "fiqh_ruling":
-        print(FIQH_REFUSAL)
-        return
-
     if intent == "off_topic":
         print(OFF_TOPIC_REFUSAL)
         return
+
+    # fiqh_ruling: do not refuse — retrieve and respond with scholarly context,
+    # but prepend FIQH_NOTE so the user knows it is not a personal ruling.
 
     # Step 3: Resolve Ayah references
     refs = resolver.resolve(query)
     if args.verbose and refs:
         print(f"[refs] {refs}\n")
 
-    qdrant_filter = build_qdrant_filter(refs, args.scholar)
+    scholar_filter = args.scholar if args.scholar and args.scholar.lower() != "all" else None
+    qdrant_filter = build_qdrant_filter(refs, scholar_filter)
 
     # Step 4: Embed + retrieve
     dense_emb = embed_query_text(query, clients)
@@ -439,7 +456,10 @@ def main() -> None:
     # Step 7: Post-process (threshold=0 — RRF scores are rank-based, not cosine)
     result = post_process(raw_response, intent, chunks, threshold=0.0)
 
-    print(result.text)
+    output = result.text
+    if intent == "fiqh_ruling":
+        output = FIQH_NOTE + output
+    print(output)
 
     if args.verbose:
         print(f"\n[citations: {result.citations}]")

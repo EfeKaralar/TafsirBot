@@ -1,6 +1,8 @@
-# AI Tafsir Bot
+# AI Islamic Scholarly Assistant (TafsirBot)
 
-An AI-powered Quranic commentary assistant built on a Retrieval-Augmented Generation (RAG) pipeline, orchestrated through self-hosted n8n, and delivered across multiple channels including a web chat interface, Telegram, WhatsApp, and X (Twitter).
+An AI-powered Islamic scholarly assistant built on a Retrieval-Augmented Generation (RAG) pipeline, orchestrated through self-hosted n8n, and delivered across multiple channels including a web chat interface, Telegram, WhatsApp, and X (Twitter).
+
+The corpus covers Quranic commentary (Tafsir), Islamic jurisprudence (fiqh), and scholarly legal opinions (fatawa). The bot presents what scholars say on any Islamic topic — including jurisprudential questions — with a clear disclaimer that responses are not personal rulings. Only queries entirely unrelated to Islam are declined.
 
 ---
 
@@ -23,9 +25,10 @@ An AI-powered Quranic commentary assistant built on a Retrieval-Augmented Genera
 
 ## Project Goals
 
-- Provide accurate, source-cited Quranic commentary by surfacing responses from established classical and modern Tafsir works.
+- Provide accurate, source-cited Islamic scholarly commentary by surfacing responses from established Tafsir works, fiqh manuals, and fatawa databases.
+- Present multiple scholarly positions on jurisprudential questions (all four Sunni madhabs weighted equally) — clearly distinguished from issuing personal rulings.
 - Support multi-channel interaction: web chat, Telegram, WhatsApp, and X auto-reply.
-- Maintain scholarly integrity through transparent sourcing, clear disclaimers, and refusal of fatwa-style rulings.
+- Maintain scholarly integrity through transparent sourcing, clear disclaimers, and explicit acknowledgment of scholarly disagreement.
 - Keep the system self-hosted and auditable, with no user query data sent to third parties beyond the LLM API.
 
 ---
@@ -84,20 +87,26 @@ The system is divided into four layers: ingestion, storage, RAG orchestration, a
 
 The ingestion layer is a set of Python scripts run offline to build and maintain the vector database. This is not part of the live query path.
 
-**Chunking strategy:** Chunks are scoped to individual Ayahs or contiguous Ayah ranges, not fixed token windows. This is a deliberate departure from general-purpose RAG design. Ayah-scoped chunking ensures retrieval results map cleanly to citable scripture references and prevents a chunk from straddling thematically unrelated verses.
+**Chunking strategy:** Chunk boundaries depend on corpus type:
+
+- **Tafsir:** Scoped to individual Ayahs or contiguous Ayah ranges — never fixed token windows. Ensures retrieval results map cleanly to citable scripture references.
+- **Fiqh:** Scoped to individual legal questions (*masa'il*) or topic-level sections.
+- **Fatawa:** One fatwa per chunk (question + ruling + reasoning).
 
 Each chunk carries the following metadata:
 
 | Field | Description |
 |---|---|
-| `surah_number` | Integer (1–114) |
-| `ayah_start` | First Ayah in chunk |
-| `ayah_end` | Last Ayah in chunk (same as start for single-Ayah chunks) |
-| `scholar` | Identifier string, e.g. `ibn_kathir`, `maududi` |
-| `language` | `ar`, `en`, or other ISO 639-1 code |
-| `source_title` | Full title of the Tafsir work |
-| `english_text` | The English translation of the Ayah(s) covered | 
-| `arabic_text` | Raw Arabic text of the Ayah(s) covered |
+| `surah_number` | Integer (1–114); null for fiqh/fatwa chunks not tied to a specific verse |
+| `ayah_start` | First Ayah in chunk; null for non-verse chunks |
+| `ayah_end` | Last Ayah in chunk; null for non-verse chunks |
+| `scholar` | Identifier string, e.g. `ibn_kathir`, `maududi`, `nuh_keller` |
+| `language` | ISO 639-1 code: `en`, `ar` |
+| `source_title` | Full title of the source work |
+| `corpus_type` | `tafsir`, `fiqh`, or `fatwa` |
+| `madhab` | `hanafi`, `maliki`, `shafii`, `hanbali`, `multi`, or `unspecified` |
+| `english_text` | English translation of the Ayah(s) covered (Tafsir chunks only) |
+| `arabic_text` | Arabic text of the Ayah(s) covered (Tafsir chunks only) |
 
 **Ingestion pipeline scripts:**
 
@@ -114,9 +123,9 @@ scripts/ingestion/
 - **Dense:** `text-embedding-3-large` (OpenAI, 3072 dims, cosine) — English-first corpus default.
 - **Sparse:** `Qdrant/bm42-all-minilm-l6-v2-attentions` via `fastembed` — BM42 sparse vectors for exact-term retrieval (verse refs, transliterated Arabic, scholar names). Downloaded ~130 MB on first run, cached in `~/.cache/fastembed/`.
 
-If Arabic-language Tafsir texts are ingested, switch the dense model to `intfloat/multilingual-e5-large` and re-embed the entire corpus. Do not mix dense embeddings from different models in the same Qdrant collection.
+**Never mix dense embedding models in the same Qdrant collection.** Vectors from different models are not comparable, making cross-vector retrieval meaningless. Arabic sources require a separate collection (see Vector Storage below).
 
-For discussion of which Tafsir works to ingest and in which priority order, see [docs/TAFSIR-CHOICE.md](docs/TAFSIR-CHOICE.md).
+For the full corpus selection discussion — Tafsir, fiqh, and fatawa — see [docs/TAFSIR-CHOICES.md](docs/TAFSIR-CHOICES.md) and [docs/RESEARCH-AGENT-BRIEF.md](docs/RESEARCH-AGENT-BRIEF.md).
 
 ---
 
@@ -126,16 +135,25 @@ For discussion of which Tafsir works to ingest and in which priority order, see 
 
 Qdrant is chosen for its native metadata filtering, strong n8n integration, and low operational overhead compared to Weaviate. All retrieval requests apply a metadata pre-filter on `surah_number` and `ayah_start`/`ayah_end` when the query contains a specific Ayah reference, significantly narrowing the candidate set before semantic ranking.
 
-**Collection design:**
+**Collection architecture:**
 
-A single collection named `tafsir` is used initially, with scholar and language as filterable metadata fields. The collection uses **named vector fields**:
+| Phase | Collection | Embedding model | Corpus |
+|---|---|---|---|
+| 1–2 (now) | `tafsir` | `text-embedding-3-large` + BM42 | All English sources: Tafsir, fiqh, fatawa |
+| 3+ (Arabic) | `tafsir_ar` | `intfloat/multilingual-e5-large` + Arabic sparse model | Arabic-primary sources |
+
+A **single collection** is used for all English content regardless of corpus type (Tafsir, fiqh, fatawa). This enables natural cross-corpus retrieval: a question about a verse's legal implication can surface both a Tafsir chunk and a fiqh ruling in one query. The `corpus_type` and `madhab` metadata fields allow filtering when needed.
+
+When Arabic sources are added (Phase 3+), a **separate collection** (`tafsir_ar`) is required — not optional — because mixing dense embeddings from different models in one collection makes retrieval meaningless. A language-routing layer in the query pipeline will fan out to both collections and merge results.
+
+The `tafsir` collection uses **named vector fields**:
 
 | Field | Type | Config |
 |---|---|---|
 | `dense` | `VectorParams` | size=3072, distance=Cosine |
 | `sparse` | `SparseVectorParams` | BM42, on-disk=False |
 
-If corpus size grows beyond roughly 500,000 vectors or if per-scholar latency becomes an issue, split into per-scholar collections. To rebuild the collection with a new schema, run `upsert.py --recreate`.
+To rebuild the collection with a new schema, run `upsert.py --recreate`.
 
 **Retrieval parameters:**
 
@@ -176,7 +194,7 @@ This is the central n8n sub-workflow. It is channel-agnostic: every channel work
 
 **Step 1 — Input Normalization.** Strip @mentions, hashtags, excess whitespace, and platform-specific formatting. Detect language.
 
-**Step 2 — Intent Classification.** (**TODO:** Could be improved) A fast, low-cost LLM call (GPT-4o-mini or equivalent) classifies the query into one of four intents: `tafsir`, `general_islamic`, `fiqh_ruling`, or `off_topic`. Queries classified as `fiqh_ruling` are short-circuited with a standard message directing the user to consult a qualified scholar. Queries classified as `off_topic` are refused politely.
+**Step 2 — Intent Classification.** A fast, low-cost LLM call classifies the query into one of four intents: `tafsir`, `general_islamic`, `fiqh_ruling`, or `off_topic`. Only `off_topic` queries are refused. `fiqh_ruling` queries — including first-person questions like "Can I pray with nail polish?" — proceed to retrieval and generation; the response is prefixed with a note that it presents scholarly perspectives, not a personal ruling. `general_islamic` queries proceed with a lower-confidence flag.
 
 **Step 3 — Ayah Reference Resolution.** A regex pass and then a lookup against a static Quran JSON file resolves any Ayah references in the query (e.g. "2:255", "Ayat al-Kursi", "Al-Fatiha") to normalized `surah_number` / `ayah_start` / `ayah_end` values. These become hard filters in the retrieval step. If no reference is detected, retrieval proceeds without a metadata filter.
 
@@ -257,19 +275,20 @@ All components run on a single VPS using Docker Compose. The recommended minimum
 ## Guardrails & Scholarly Integrity
 
 - Every response includes the standard disclaimer (see Step 7 above). This cannot be disabled.
-- Queries classified as `fiqh_ruling` (requests for fatwa-style religious rulings) are refused by the intent classifier and redirected to a message advising the user to consult a qualified scholar.
-- Every response cites at least one source using the format `[Scholar Name on Surah:Ayah]`. Responses with no retrievable source are not published.
+- Jurisprudential questions (`fiqh_ruling` intent) are answered with scholarly perspectives from the corpus, prefixed with a note that the response is not a personal fatwa. Only queries entirely unrelated to Islam (`off_topic`) are refused.
+- Every response cites at least one source using the format `[Scholar Name on Surah:Ayah]` (for Tafsir chunks) or `[Scholar Name on Topic]` (for fiqh/fatawa chunks). Responses with no retrievable source are not published.
 - Low-confidence responses on the X channel are held for human review before publishing. On other channels, a low-confidence flag is noted in the response.
-- Politically contentious or sectarian interpretive questions are handled with explicit acknowledgment of scholarly disagreement rather than presenting a single view as authoritative.
+- Scholarly disagreement is surfaced explicitly — multiple madhab positions are presented where they exist rather than a single view being presented as authoritative.
 - A curated refusal list of query patterns is maintained and reviewed periodically.
 
 ---
 
-## Tafsir Corpus Selection
+## Corpus Selection
 
-The choice of which Tafsir works to include, in which languages, and in which priority order has significant implications for the theological perspective and scope of the bot. This is treated as a separate ongoing discussion.
+The corpus covers three text types: **Tafsir** (Quranic commentary), **fiqh** (jurisprudence manuals and encyclopedias), and **fatawa** (legal opinions). All four Sunni madhabs are represented; the bot is madhab-agnostic and presents multiple positions where scholars differ.
 
-See [docs/TAFSIR-CHOICE.md](docs/TAFSIR-CHOICE.md) for the full discussion, including candidate works, inclusion criteria, licensing considerations, and phased ingestion plan.
+- See [docs/TAFSIR-CHOICES.md](docs/TAFSIR-CHOICES.md) for per-source analysis of Tafsir works (current) and fiqh/fatawa sources (in progress).
+- See [docs/RESEARCH-AGENT-BRIEF.md](docs/RESEARCH-AGENT-BRIEF.md) for the brief used to research and evaluate fiqh/fatawa candidate sources.
 
 ---
 
@@ -318,43 +337,45 @@ POSTGRES_PASSWORD=
 
 ## TODO
 
-### Phase 1 — Foundation
+### Phase 1 — Foundation (complete)
 
-- [ ] Finalize Tafsir corpus selection (see [docs/TAFSIR-CHOICE.md](docs/TAFSIR-CHOICE.md))
-- [ ] Source and clean raw text for the Phase 1 corpus (minimum two works)
-- [ ] Build and test `clean.py`, `chunk.py`, `embed.py`, `upsert.py` ingestion scripts
-- [ ] Stand up Qdrant and Postgres via Docker Compose on the VPS
-- [ ] Build the core RAG n8n sub-workflow (Steps 1–7)
-- [ ] Build the Telegram channel workflow and connect to the sub-workflow
-- [ ] Internal testing: evaluate retrieval quality across a test set of ~50 queries
-- [ ] Run `audit.py` and fix chunking or metadata issues surfaced by testing
+- [x] Finalize Tafsir corpus selection (see [docs/TAFSIR-CHOICES.md](docs/TAFSIR-CHOICES.md))
+- [x] Source and clean raw text for Phase 1 corpus (Ibn Kathir EN + Maududi EN)
+- [x] Build and test `clean.py`, `chunk.py`, `embed.py`, `upsert.py` ingestion scripts
+- [x] Stand up Qdrant via Docker Compose locally
+- [x] Build Python POC RAG script (`scripts/rag_poc.py`) with hybrid BM42+dense retrieval
+- [x] Internal testing: `audit.py` + `test_poc.py` against a curated query set
+- [ ] Run `test_poc.py` full suite and document results in `docs/AUDIT-REPORT.md`
 
-### Phase 2 — Refinement
+### Phase 2 — Fiqh Corpus + Refinement
 
-- [ ] Tune the intent classifier prompt; build and evaluate the refusal list
+- [ ] Research and select fiqh/fatawa sources (see [docs/RESEARCH-AGENT-BRIEF.md](docs/RESEARCH-AGENT-BRIEF.md)); update [docs/TAFSIR-CHOICES.md](docs/TAFSIR-CHOICES.md)
+- [ ] Extend chunk metadata schema with `corpus_type` and `madhab` fields; run `upsert.py --recreate`
+- [ ] Build acquisition + ingestion scripts for Phase 2 fiqh/fatawa sources
+- [ ] Tune intent classifier; validate fiqh-adjacent queries return scholarly content with correct disclaimer
 - [ ] Add conversation history persistence to Postgres (keyed on channel + user ID)
-- [ ] Evaluate embedding model choice; assess whether multilingual support is needed
+- [ ] Port RAG pipeline to n8n; build Telegram channel workflow
 - [ ] Onboard a small group of external testers on Telegram
 - [ ] Establish a human review queue for low-confidence responses
 - [ ] Have a person with Islamic scholarly knowledge audit a sample of responses for accuracy
 
-### Phase 3 — Additional Channels
+### Phase 3 — Arabic Corpus + Additional Channels
 
+- [ ] Research Arabic-capable sparse embedding model to pair with `multilingual-e5-large`
+- [ ] Create `tafsir_ar` Qdrant collection; ingest first Arabic source (e.g. Kuwaiti Fiqh Encyclopedia)
+- [ ] Build language-routing layer in query pipeline (detect language → fan out to EN + AR collections)
 - [ ] Build the web chat frontend and connect it to the n8n webhook endpoint
-- [ ] Build the X auto-reply polling workflow
-- [ ] Acquire X Basic API tier access
+- [ ] Build the X auto-reply polling workflow; acquire X Basic API tier access
 - [ ] Build the WhatsApp channel workflow (Meta Cloud API or middleware)
 - [ ] Test all channels end-to-end with the production corpus
 
 ### Phase 4 — Scale & Quality
 
-- [ ] Expand corpus to additional Tafsir works (see [docs/TAFSIR-CHOICE.md](docs/TAFSIR-CHOICE.md))
-- [ ] Evaluate per-scholar Qdrant collection split if latency or corpus size warrants it
-- [ ] Assess Arabic-language query support; switch embedding model if proceeding
-- [ ] Implement usage analytics (query volume, confidence distribution, channel breakdown)
+- [ ] Expand Arabic corpus (Al-Qurtubi, Al-Tabari, Zuhayli, Ibn Ashur)
+- [ ] Implement usage analytics (query volume, confidence distribution, channel breakdown, madhab distribution of retrieved chunks)
 - [ ] Set up automated alerting for n8n workflow failures and API quota thresholds
-- [ ] Periodic review of the refusal list and guardrail effectiveness
-- [ ] Assess whether a fine-tuned embedding model on Quranic text improves retrieval quality
+- [ ] Periodic review of guardrail effectiveness and scholarly accuracy
+- [ ] Assess whether a fine-tuned embedding model on Islamic text improves retrieval quality
 
 ### Ongoing
 
