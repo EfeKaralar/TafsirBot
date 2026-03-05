@@ -110,7 +110,11 @@ scripts/ingestion/
   audit.py       -- Spot-check retrieval quality for a set of test queries
 ```
 
-**Embedding model:** For an English-first corpus, `text-embedding-3-large` (OpenAI) is the default. If Arabic-language Tafsir texts are ingested, switch to a multilingual model such as `intfloat/multilingual-e5-large` and re-embed the entire corpus. Do not mix embeddings from different models in the same Qdrant collection.
+**Embedding models:**
+- **Dense:** `text-embedding-3-large` (OpenAI, 3072 dims, cosine) — English-first corpus default.
+- **Sparse:** `Qdrant/bm42-all-minilm-l6-v2-attentions` via `fastembed` — BM42 sparse vectors for exact-term retrieval (verse refs, transliterated Arabic, scholar names). Downloaded ~130 MB on first run, cached in `~/.cache/fastembed/`.
+
+If Arabic-language Tafsir texts are ingested, switch the dense model to `intfloat/multilingual-e5-large` and re-embed the entire corpus. Do not mix dense embeddings from different models in the same Qdrant collection.
 
 For discussion of which Tafsir works to ingest and in which priority order, see [docs/TAFSIR-CHOICE.md](docs/TAFSIR-CHOICE.md).
 
@@ -124,13 +128,21 @@ Qdrant is chosen for its native metadata filtering, strong n8n integration, and 
 
 **Collection design:**
 
-A single collection named `tafsir` is used initially, with scholar and language as filterable metadata fields. If corpus size grows beyond roughly 500,000 vectors or if per-scholar latency becomes an issue, split into per-scholar collections.
+A single collection named `tafsir` is used initially, with scholar and language as filterable metadata fields. The collection uses **named vector fields**:
+
+| Field | Type | Config |
+|---|---|---|
+| `dense` | `VectorParams` | size=3072, distance=Cosine |
+| `sparse` | `SparseVectorParams` | BM42, on-disk=False |
+
+If corpus size grows beyond roughly 500,000 vectors or if per-scholar latency becomes an issue, split into per-scholar collections. To rebuild the collection with a new schema, run `upsert.py --recreate`.
 
 **Retrieval parameters:**
 
-- Top-K: 5–8 chunks per query
-- Distance metric: Cosine
-- Metadata filter applied before vector search when Ayah reference is detected
+- Top-K: 5 chunks per query (each prefetch branch fetches top_k × 4 candidates)
+- Retrieval mode: **Hybrid** — dense cosine prefetch + BM42 sparse prefetch, fused via server-side **Reciprocal Rank Fusion (RRF)**
+- Scores returned are RRF rank-based (not cosine similarity); rank-1 from both branches yields score 1.0
+- Metadata filter applied inside each prefetch block when an Ayah reference is detected
 
 ---
 
@@ -168,7 +180,7 @@ This is the central n8n sub-workflow. It is channel-agnostic: every channel work
 
 **Step 3 — Ayah Reference Resolution.** A regex pass and then a lookup against a static Quran JSON file resolves any Ayah references in the query (e.g. "2:255", "Ayat al-Kursi", "Al-Fatiha") to normalized `surah_number` / `ayah_start` / `ayah_end` values. These become hard filters in the retrieval step. If no reference is detected, retrieval proceeds without a metadata filter.
 
-**Step 4 — Vector Retrieval.** The query is embedded and the top-K chunks are retrieved from Qdrant. If an Ayah reference was resolved, a metadata pre-filter is applied. Results from multiple scholars are requested where possible to avoid single-source responses.
+**Step 4 — Hybrid Retrieval.** The query is embedded with both the dense model (OpenAI) and the sparse BM42 model (fastembed). Qdrant runs two prefetch branches (dense + sparse) and fuses results via server-side RRF. Metadata pre-filters are applied inside each prefetch block when an Ayah reference was resolved.
 
 **Step 5 — Prompt Assembly.** The system prompt establishes the bot's role (scholarly assistant, not a mufti), its citation requirements, and the disclaimer obligation. Retrieved chunks are inserted as labeled context blocks. The last three to five turns of conversation history are appended for follow-up coherence.
 

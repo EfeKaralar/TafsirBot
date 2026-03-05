@@ -6,12 +6,15 @@ TafsirBot is an AI-powered Quranic commentary assistant built on a RAG pipeline 
 
 ## Key Architecture Decisions (Locked In)
 
-- **Vector DB:** Qdrant (self-hosted via Docker Compose) — single `tafsir` collection initially, metadata-filtered retrieval
+- **Vector DB:** Qdrant (self-hosted via Docker Compose) — single `tafsir` collection with named dense+sparse vector fields; hybrid RRF retrieval
+- **Retrieval:** Hybrid BM42+dense via Qdrant server-side RRF fusion (`prefetch` dense + sparse → `FusionQuery(RRF)`); scores are rank-based (not cosine)
 - **Orchestration:** n8n (self-hosted) — one canonical RAG sub-workflow, called by channel-specific workflows
 - **Ingestion:** Python scripts under `scripts/ingestion/` — offline pipeline, not on the live query path
 - **Quran data:** `sources/quran-json/` submodule provides Quran text and chapter metadata in JSON
 - **Chunking:** Ayah-scoped (not fixed token windows); each chunk maps to a citable scripture reference
-- **Embedding:** `text-embedding-3-large` (OpenAI) for English-first corpus; switch to `intfloat/multilingual-e5-large` only if Arabic ingestion is needed — never mix models in the same collection
+- **Dense embedding:** `text-embedding-3-large` (OpenAI, 3072 dims) for English-first corpus; switch to `intfloat/multilingual-e5-large` only if Arabic ingestion is needed — never mix dense models in the same collection
+- **Sparse embedding:** `Qdrant/bm42-all-minilm-l6-v2-attentions` via `fastembed` — handles exact-term queries (verse refs, transliterated Arabic, scholar names)
+- **Python version:** Pinned to 3.12 (`.python-version`); `onnxruntime` (fastembed dependency) is incompatible with Python 3.14
 - **LLM:** Claude Sonnet (primary) or GPT-4o; temperature 0.3, max 800 tokens (500 for X)
 - **Infrastructure:** Docker Compose on a single VPS (Hetzner CX31 / DO 4GB minimum)
 

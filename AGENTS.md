@@ -30,13 +30,15 @@
 ### Python setup
 - `uv sync` — install all dependencies and create/update `uv.lock`
 - Never use `pip install` directly; add new deps to `pyproject.toml` then re-run `uv sync`
+- Python is pinned to **3.12** (`.python-version`). Do not upgrade to 3.13+ until `onnxruntime` (used by `fastembed`) confirms support.
 
 ### Ingestion pipeline (Python)
 - `uv run python scripts/ingestion/clean.py --scholar ibn_kathir`
 - `uv run python scripts/ingestion/chunk.py --scholar ibn_kathir`
 - `uv run python scripts/ingestion/embed.py --scholar ibn_kathir`
-- `uv run python scripts/ingestion/upsert.py --scholar ibn_kathir`
-- `uv run python scripts/ingestion/audit.py`
+- `uv run python scripts/ingestion/upsert.py --scholar ibn_kathir` — upsert with dense+sparse vectors
+- `uv run python scripts/ingestion/upsert.py --scholar all --recreate` — drop and rebuild collection (required after schema changes)
+- `uv run python scripts/ingestion/audit.py` — hybrid retrieval quality report
 
 ### Infrastructure
 - `docker compose up -d` — start Qdrant, n8n, Postgres, Nginx

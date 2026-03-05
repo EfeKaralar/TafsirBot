@@ -158,21 +158,24 @@ Generates embeddings for the `content` field of each chunk.
 
 ### `upsert.py`
 
-Pushes embedded chunks into Qdrant.
+Pushes embedded chunks into Qdrant with both dense and sparse vectors.
 
-- Collection: `tafsir`, cosine distance, 3072 dims — created if not present
+- Collection: `tafsir` — named vector fields: `dense` (3072-dim cosine) + `sparse` (BM42 via fastembed)
+- Created automatically if absent; use `--recreate` to drop and rebuild when the schema changes
+- Sparse vectors computed per-batch from the `content` field using `Qdrant/bm42-all-minilm-l6-v2-attentions`
 - Point ID: deterministic hash of `scholar + surah_number + ayah_start + chunk_type` (idempotent re-runs)
 - All metadata fields stored as Qdrant payload for filtering
 - Input: `data/embedded/<scholar>.jsonl`
 
 ### `audit.py`
 
-Retrieval quality validation.
+Retrieval quality validation using hybrid search.
 
 - Runs a hard-coded test query set (see Step 5)
-- Prints top-5 retrieved chunks per query with cosine scores
-- Flags queries where best score < 0.70 (configurable threshold)
-- Summary report: mean score, score distribution, low-confidence query list
+- Embeds each query with both dense (OpenAI) and sparse (BM42 fastembed) models
+- Retrieves top-K chunks via Qdrant hybrid prefetch + RRF fusion
+- Prints top-5 results per query with RRF scores (rank-based, not cosine; 1.0 = rank-1 from both branches)
+- Summary report: total queries, mean top RRF score
 
 ---
 
@@ -205,8 +208,8 @@ Call `ayah_resolver.resolve(query)`. If references found, build Qdrant metadata 
            {"key": "ayah_start", "range": {"gte": start, "lte": end}}]}
 ```
 
-**4. Vector retrieval**
-Embed query → Qdrant search, top-K=5 (with metadata filter if resolved). Request at least 2 scholars where possible.
+**4. Hybrid retrieval**
+Embed query with dense (OpenAI) + sparse (BM42) models → Qdrant hybrid prefetch+RRF, top-K=5. Metadata filter applied inside each prefetch block when an Ayah reference was resolved.
 
 **5. Prompt assembly**
 System prompt: scholarly assistant role, citation requirements, disclaimer obligation.
@@ -241,10 +244,11 @@ Extract citations. Append standard disclaimer. Print response.
 | Edge cases — refuse | 10 | Fiqh rulings, off-topic, politically charged, sectarian framing |
 
 ### Pass criteria
-- Specific ayah queries: top retrieved chunk matches the referenced surah/ayah
+- Specific named ayah queries (e.g. "Ayat al-Kursi", "Surah Al-Ikhlas"): top retrieved chunk matches the referenced ayah with RRF score ≥ 0.5
 - Thematic queries: at least 3 of 5 retrieved chunks are relevantly topical
 - Edge cases: 100% refused correctly (no tafsir content returned for fiqh/off-topic)
-- Mean cosine score across non-refused queries: > 0.72
+- Mean top RRF score across non-refused queries: > 0.60
+- Note: bare numeric references ("2:255") rely on the ayah resolver metadata filter in `rag_poc.py`, not raw retrieval
 
 ---
 
