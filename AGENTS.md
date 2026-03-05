@@ -27,12 +27,16 @@
 - `cd sources/quran-json && node scripts/download.js` — fetch source data (skips existing)
 - `cd sources/quran-json && node scripts/download.js --clean` — clear and re-download
 
+### Python setup
+- `uv sync` — install all dependencies and create/update `uv.lock`
+- Never use `pip install` directly; add new deps to `pyproject.toml` then re-run `uv sync`
+
 ### Ingestion pipeline (Python)
-- `cd scripts/ingestion && python clean.py` — normalize raw tafsir source text
-- `cd scripts/ingestion && python chunk.py` — produce ayah-scoped chunks with metadata
-- `cd scripts/ingestion && python embed.py` — generate embeddings
-- `cd scripts/ingestion && python upsert.py` — push chunks into Qdrant
-- `cd scripts/ingestion && python audit.py` — spot-check retrieval quality
+- `uv run python scripts/ingestion/clean.py --scholar ibn_kathir`
+- `uv run python scripts/ingestion/chunk.py --scholar ibn_kathir`
+- `uv run python scripts/ingestion/embed.py --scholar ibn_kathir`
+- `uv run python scripts/ingestion/upsert.py --scholar ibn_kathir`
+- `uv run python scripts/ingestion/audit.py`
 
 ### Infrastructure
 - `docker compose up -d` — start Qdrant, n8n, Postgres, Nginx

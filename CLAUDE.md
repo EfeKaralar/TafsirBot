@@ -58,7 +58,8 @@ Every chunk must carry:
 ## Coding Style
 
 ### Python (ingestion scripts)
-- Python 3.11+; use `uv` for dependency management if available, else `pip`
+- Python 3.11+; use `uv` for all dependency management (`uv sync`, `uv run`)
+- Never use `pip install` directly; declare all deps in `pyproject.toml`
 - Type hints on all function signatures
 - `snake_case` for variables and functions, `PascalCase` for classes
 - Structured logging with the standard `logging` module

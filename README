@@ -48,30 +48,32 @@ Infrastructure: Docker Compose on a single VPS (Qdrant + n8n + Postgres + Nginx)
 
 GETTING STARTED
 ---------------
-Prerequisites: Docker, Docker Compose, Python 3.11+, Node.js 18+
+Prerequisites: Docker, Docker Compose, Python 3.11+, Node.js 18+, uv
 
 1. Clone with submodules:
      git clone --recurse-submodules <repo-url>
      cd TafsirBot
 
-2. Build Quran JSON data:
+2. Install Python dependencies:
+     uv sync
+
+3. Build Quran JSON data:
      cd sources/quran-json && npm install && npm run build && cd ../..
 
-3. Copy and fill environment variables:
+4. Copy and fill environment variables:
      cp .env.example .env
      # Edit .env with your API keys
 
-4. Start infrastructure:
+5. Start infrastructure:
      docker compose up -d
 
-5. Run ingestion pipeline (after sourcing tafsir texts):
-     cd scripts/ingestion
-     python clean.py
-     python chunk.py
-     python embed.py
-     python upsert.py
+6. Run ingestion pipeline (after sourcing tafsir texts):
+     uv run python scripts/ingestion/clean.py --scholar ibn_kathir
+     uv run python scripts/ingestion/chunk.py --scholar ibn_kathir
+     uv run python scripts/ingestion/embed.py --scholar ibn_kathir
+     uv run python scripts/ingestion/upsert.py --scholar ibn_kathir
 
-6. Import n8n workflows from n8n/workflows/ and activate them.
+7. Import n8n workflows from n8n/workflows/ and activate them.
 
 Full architecture documentation: sources/README.md
 Agent/coding guidelines: AGENTS.md, CLAUDE.md
