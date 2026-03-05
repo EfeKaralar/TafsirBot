@@ -5,8 +5,8 @@ Tests the full pipeline (intent → retrieval → generation) against a curated
 query set and asserts expected behaviour:
 
   - tafsir / general_islamic queries  → response must contain at least one
-    [Scholar on X:Y] citation
-  - fiqh_ruling / off_topic queries   → must be refused (no tafsir content)
+    [Scholar on X:Y] inline citation AND a **Sources:** section with entries
+  - off_topic queries                 → must be refused (no tafsir content)
 
 The expected_category column is what *should* happen.  If the intent
 classifier disagrees, the test is marked FAIL (classifier error).
@@ -114,7 +114,11 @@ QUICK_CASES: list[TestCase] = [
 
 # ── Assertions ────────────────────────────────────────────────────────────────
 
+# Matches inline citations like [Ibn Kathir on 2:255]
 CITATION_RE = re.compile(r"\[[^\]]+\s+on\s+[^\]]+\]", re.IGNORECASE)
+
+# Matches a source line in the **Sources:** section, e.g. "- Ibn Kathir on 2:255"
+SOURCES_LINE_RE = re.compile(r"^\s*-\s+\w.+\s+on\s+\d+:\d+", re.IGNORECASE | re.MULTILINE)
 
 REFUSAL_PHRASES = (
     "can only answer questions about",  # OFF_TOPIC_REFUSAL
@@ -142,13 +146,18 @@ def check_result(
 
     # tafsir / general_islamic / fiqh_ruling — expect a generated response with citations
     if intent == "off_topic":
-        return False, f"expected content but off_topic caused refusal"
+        return False, "expected content but off_topic caused refusal"
     if response_text is None:
         return False, "no response generated"
     citations = CITATION_RE.findall(response_text)
     if not citations:
-        return False, "response contains no citations"
-    return True, f"{len(citations)} citation(s): {citations[0]}"
+        return False, "response contains no inline citations ([Scholar on S:V])"
+    if "**Sources:**" not in response_text:
+        return False, "response missing **Sources:** section"
+    sources = SOURCES_LINE_RE.findall(response_text)
+    if not sources:
+        return False, "**Sources:** section contains no source entries"
+    return True, f"{len(citations)} inline citation(s), {len(sources)} source(s): {citations[0]}"
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────

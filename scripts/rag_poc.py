@@ -319,6 +319,28 @@ def extract_citations(text: str) -> list[str]:
     return re.findall(r"\[[^\]]+on\s+[^\]]+\]", text)
 
 
+def format_sources(chunks: list[dict]) -> str:
+    """Build a deduplicated Sources section from retrieved chunks."""
+    seen: set[str] = set()
+    lines: list[str] = []
+    for chunk in chunks:
+        scholar = _scholar_display(chunk["scholar"])
+        surah = chunk["surah_number"]
+        start = chunk["ayah_start"]
+        end = chunk["ayah_end"]
+        title = chunk.get("source_title", "")
+        if start == 0:
+            ref = f"{scholar} — {title} (surah {surah} introduction)"
+        elif start == end:
+            ref = f"{scholar} on {surah}:{start} — {title}"
+        else:
+            ref = f"{scholar} on {surah}:{start}–{end} — {title}"
+        if ref not in seen:
+            seen.add(ref)
+            lines.append(f"- {ref}")
+    return "\n**Sources:**\n" + "\n".join(lines)
+
+
 def post_process(
     raw_text: str,
     intent: str,
@@ -329,7 +351,8 @@ def post_process(
     top_score = max((c["score"] for c in chunks), default=0.0)
     confidence: Literal["high", "low"] = "high" if top_score >= threshold else "low"
 
-    final_text = raw_text + DISCLAIMER
+    sources_section = format_sources(chunks)
+    final_text = raw_text + sources_section + DISCLAIMER
     if confidence == "low":
         final_text = (
             "*(Note: retrieval confidence is low for this query — "
