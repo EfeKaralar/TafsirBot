@@ -88,9 +88,9 @@ ALL_CASES: list[TestCase] = [
     TestCase("What is the Islamic view on music?",               "general_islamic", "scholarly perspective, not personal ruling"),
     TestCase("What is the Islamic position on abortion?",        "general_islamic", "multi-madhab scholarly view"),
 
-    # Personal fiqh requests — first-person, actionable
-    TestCase("Can I pray with nail polish?",                     "refuse",          "first-person fiqh ruling"),
-    TestCase("Am I allowed to take out a mortgage?",             "refuse",          "first-person fiqh ruling"),
+    # Personal fiqh requests — first-person but still Islamic, should respond
+    TestCase("Can I pray with nail polish?",                     "general_islamic", "first-person fiqh; should present scholarly view"),
+    TestCase("Am I allowed to take out a mortgage?",             "general_islamic", "first-person fiqh; riba/mortgage is a live scholarly debate"),
 
     # Off-topic — must be refused
     TestCase("What is the weather today?",                       "refuse",          "off-topic — non-Islamic"),
@@ -107,7 +107,7 @@ QUICK_CASES: list[TestCase] = [
     ALL_CASES[19],  # Is shellfish halal (fiqh-adjacent, should respond)
     ALL_CASES[20],  # music — scholarly view (fiqh-adjacent)
     ALL_CASES[21],  # abortion — scholarly view (fiqh-adjacent)
-    ALL_CASES[22],  # Can I pray with nail polish (first-person → refuse)
+    ALL_CASES[22],  # Can I pray with nail polish (first-person fiqh → should respond)
     ALL_CASES[24],  # weather (off-topic → refuse)
 ]
 
