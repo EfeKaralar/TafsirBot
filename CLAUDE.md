@@ -18,16 +18,16 @@ TafsirBot is an AI-powered Quranic commentary assistant built on a RAG pipeline 
 ## Tafsir Corpus Priorities
 
 **Primary (Phase 1):**
-- Ibn Kathir — English (Dar-us-Salam translation); strip isnad chains before embedding
-- Maududi (Tafhim al-Quran) — English; surah introductions are a separate chunk type
+- Ibn Kathir — English (Dar-us-Salam, 10-vol. abridged translation); strip isnad chains before embedding. Note: the English is an abridgment — chains are often compressed or absent. He is **Shafi'i in fiqh** and Athari-leaning in theology (shaped by Ibn Taymiyya); do not describe him as Hanbali. He actively criticises Isra'iliyyat; his weakness is occasional acceptance of *hadith da'if* outside that category.
+- Maududi (Tafhim al-Quran) — English (*Towards Understanding the Quran*, The Islamic Foundation); surah introductions are a separate chunk type. Translation is from Urdu, adding one layer of interpretive distance from the Arabic.
 
 **Secondary (Phase 2+):**
 - Al-Qurtubi — Arabic; tag chunks with fiqh topics
 - Al-Tabari — Arabic; preserve opinion markers per verse
 
 **Supporting (Phase 3+):**
-- Jalalayn — English (Feras Hamza); small per-phrase chunks
-- Ibn Ashur — Arabic; large chunks to preserve argumentative flow
+- Jalalayn — English (Feras Hamza translation); small per-phrase chunks. Authors are Jalal al-Din al-Mahalli (teacher, initiated) and Jalal al-Din al-Suyuti (student, completed) — teacher-student, not father-son.
+- Ibn Ashur — Arabic; large chunks to preserve argumentative flow. Maliki in fiqh.
 
 See `docs/TAFSIR-CHOICES.md` and `docs/TAFSIR-CORPUS.mdx` for full per-tafsir RAG specifications.
 
@@ -71,8 +71,9 @@ Every chunk must carry:
 
 ## Key File Paths
 
-- `docs/TAFSIR-CHOICES.md` — per-tafsir analysis and RAG considerations
+- `docs/TAFSIR-CHOICES.md` — per-tafsir analysis and RAG considerations (fact-checked)
 - `docs/TAFSIR-CORPUS.mdx` — interactive corpus dashboard (React component)
+- `docs/PHASE-1-PLAN.md` — detailed Phase 1 implementation plan
 - `sources/README.md` — full system architecture, environment variables, TODO list
 - `sources/quran-json/dist/quran_en.json` — full English Quran (used by ingestion for `english_text` field)
 - `sources/quran-json/dist/quran.json` — full Arabic Quran (used for `arabic_text` field)
@@ -82,10 +83,10 @@ Every chunk must carry:
 
 ## Development Phases
 
-- **Phase 1:** Ingestion pipeline + Qdrant + core n8n RAG workflow + Telegram channel
-- **Phase 2:** Refinement, intent classifier tuning, conversation history, external testers
+- **Phase 1:** Corpus acquisition + ingestion pipeline (clean/chunk/embed/upsert) + Qdrant (local Docker) + Python POC RAG script. No n8n yet.
+- **Phase 2:** Port to n8n; Telegram channel; conversation history; intent classifier tuning; external testers
 - **Phase 3:** Web chat, X auto-reply, WhatsApp
-- **Phase 4:** Corpus expansion, per-scholar collections, Arabic support, analytics
+- **Phase 4:** Corpus expansion (Al-Qurtubi, Al-Tabari, Jalalayn, Ibn Ashur), Arabic support, analytics
 
 ## What to Avoid
 
