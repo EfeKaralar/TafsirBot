@@ -241,12 +241,14 @@ Extract citations. Append standard disclaimer. Print response.
 | Thematic | 10 | "What does the Quran say about tawakkul?", "Justice in the Quran" |
 | Cross-verse | 5 | "Verses about the Day of Judgment", "Descriptions of Jannah" |
 | Linguistic | 5 | "What does 'taqwa' mean in 2:2?", "Root meaning of 'khalifa' in 2:30" |
-| Edge cases — refuse | 10 | Fiqh rulings, off-topic, politically charged, sectarian framing |
+| Edge cases — respond with guardrails | 5 | Fiqh/ruling-style prompts that should return scholarly context, not a personal fatwa |
+| Edge cases — refuse | 5 | Clearly off-topic prompts that should be politely declined |
 
 ### Pass criteria
 - Specific named ayah queries (e.g. "Ayat al-Kursi", "Surah Al-Ikhlas"): top retrieved chunk matches the referenced ayah with RRF score ≥ 0.5
 - Thematic queries: at least 3 of 5 retrieved chunks are relevantly topical
-- Edge cases: 100% refused correctly (no tafsir content returned for fiqh/off-topic)
+- Fiqh / ruling-style edge cases: classified as non-`off_topic` and answered with scholarly context plus the fatwa-note/disclaimer
+- Off-topic edge cases: 100% refused correctly (no retrieval or tafsir content returned)
 - Mean top RRF score across non-refused queries: > 0.60
 - Note: bare numeric references ("2:255") rely on the ayah resolver metadata filter in `rag_poc.py`, not raw retrieval
 
@@ -259,7 +261,8 @@ Extract citations. Append standard disclaimer. Print response.
 - [ ] Full corpus for Ibn Kathir + Maududi ingested into Qdrant
 - [ ] `audit.py` run; all pass criteria met
 - [ ] `rag_poc.py` tested against all 50 evaluation queries
-- [ ] All 10 edge-case queries correctly refused
+- [ ] All 5 off-topic edge-case queries correctly refused
+- [ ] All 5 fiqh / ruling-style edge cases handled with scholarly context (not refused)
 - [ ] `data/` directory added to `.gitignore` (raw and processed tafsir text must not be committed)
 - [ ] Chunk counts, mean scores, and any quality issues documented in `docs/AUDIT-REPORT.md`
 

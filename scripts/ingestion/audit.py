@@ -52,8 +52,10 @@ def _build_filter(refs) -> dict | None:
 
 # ── Test query set ────────────────────────────────────────────────────────────
 # 50 queries spanning: named ayahs, numeric refs, thematic, cross-verse,
-# linguistic, and edge cases that should be refused.
-# Queries prefixed with "REFUSE:" must NOT return tafsir chunks (tested separately).
+# linguistic, fiqh/general-Islamic prompts that should still be answered,
+# and clearly off-topic prompts that should be refused.
+# Queries prefixed with "OFF_TOPIC:" are not retrieved here; they are listed
+# for manual refusal checks against the end-to-end app workflow.
 
 TEST_QUERIES: list[str] = [
     # Named ayah lookups (10)
@@ -106,17 +108,19 @@ TEST_QUERIES: list[str] = [
     "Grammatical explanation of Surah Al-Ikhlas verse 1",
     "What does 'iqra' mean in the first revelation?",
 
-    # Edge cases — these should be refused or handled carefully (10)
-    "REFUSE: Is it halal to eat shellfish?",
-    "REFUSE: What is the Islamic ruling on music?",
-    "REFUSE: Can I pray with nail polish?",
-    "REFUSE: Is cryptocurrency haram?",
-    "REFUSE: What is the fatwa on travel insurance?",
-    "REFUSE: Tell me about the history of Islam",
-    "REFUSE: What is the weather today?",
-    "REFUSE: Who is the best football player?",
-    "REFUSE: Write me a poem about the Quran",
-    "REFUSE: Translate this Arabic text for me",
+    # Edge cases — these should still be answered with guardrails (5)
+    "Is it halal to eat shellfish?",
+    "What is the Islamic ruling on music?",
+    "Can I pray with nail polish?",
+    "Is cryptocurrency haram?",
+    "What is the fatwa on travel insurance?",
+
+    # Off-topic refusal checks — manual in the app / rag_poc layer (5)
+    "OFF_TOPIC: What is the weather today?",
+    "OFF_TOPIC: Who is the best football player?",
+    "OFF_TOPIC: Plan a weekend trip to Boston",
+    "OFF_TOPIC: Write me a poem about coffee",
+    "OFF_TOPIC: Translate this Spanish sentence into English",
 ]
 
 
@@ -191,8 +195,8 @@ def run_audit(
     top_k: int,
     resolver=None,
 ) -> None:
-    refuse_queries = [q for q in queries if q.startswith("REFUSE:")]
-    normal_queries = [q for q in queries if not q.startswith("REFUSE:")]
+    off_topic_queries = [q for q in queries if q.startswith("OFF_TOPIC:")]
+    normal_queries = [q for q in queries if not q.startswith("OFF_TOPIC:")]
 
     print("\n" + "=" * 72)
     print(f"AUDIT REPORT  |  collection={collection}  top_k={top_k}  mode=hybrid-RRF")
@@ -238,9 +242,9 @@ def run_audit(
     print(f"  Total queries:     {total}")
     print(f"  Mean top RRF score:{mean_score:.6f}  (rank-based, not cosine)")
 
-    print(f"\nRefusal edge cases to test manually ({len(refuse_queries)} queries):")
-    for q in refuse_queries:
-        print(f"  - {q[len('REFUSE:'):].strip()}")
+    print(f"\nOff-topic refusal checks to run manually ({len(off_topic_queries)} queries):")
+    for q in off_topic_queries:
+        print(f"  - {q[len('OFF_TOPIC:'):].strip()}")
     print("=" * 72 + "\n")
 
 
