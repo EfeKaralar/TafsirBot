@@ -53,8 +53,8 @@ Every chunk must carry:
 ## Guardrails (Non-Negotiable)
 
 - Every response includes the standard disclaimer (not removable)
-- `fiqh_ruling` intent → refuse and redirect to a qualified scholar
-- `off_topic` intent → polite refusal
+- `fiqh_ruling` intent → retrieve and generate a response with scholarly perspectives; prepend a note that this is not a personal fatwa and the user should consult a qualified scholar
+- `off_topic` intent → polite refusal (only intent that short-circuits retrieval)
 - Low-confidence responses on X → hold for human review, never auto-publish
 - Every published response must cite at least one source
 
@@ -96,7 +96,7 @@ Every chunk must carry:
 
 - Do not mix embedding models in the same Qdrant collection
 - Do not commit `.env` files or API keys
-- Do not generate fatwa-style responses; always route `fiqh_ruling` intent to refusal
+- Do not generate personal fatwa/ruling responses; `fiqh_ruling` queries get scholarly context with a disclaimer, not a direct ruling
 - Do not auto-publish low-confidence responses on X
 - Do not use fixed token-window chunking — always chunk by ayah boundaries
 - Do not use `git submodule` commands destructively on `sources/quran-json/`
