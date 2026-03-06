@@ -1,19 +1,19 @@
 TafsirBot
 =========
 
-An AI-powered Quranic commentary assistant that retrieves and synthesizes explanations from classical and modern Tafsir scholarship using a RAG (Retrieval-Augmented Generation) pipeline.
+An AI-powered Islamic scholarly assistant that retrieves and synthesizes source-cited scholarly context across Tafsir and adjacent Islamic questions using a RAG (Retrieval-Augmented Generation) pipeline.
 
 Delivered across Telegram, web chat, WhatsApp, and X (Twitter).
 
 
 WHAT IT DOES
 ------------
-A user asks a question about a Quranic verse — e.g. "What does 2:255 (Ayat al-Kursi) mean?" or
-"What do scholars say about the concept of tawakkul?" — and TafsirBot retrieves relevant passages
-from multiple authoritative Tafsir works, synthesizes a cited response, and returns it with source
-attribution and a scholarly disclaimer.
+A user asks a question about a Quranic verse or an Islamic topic — e.g. "What does 2:255
+(Ayat al-Kursi) mean?", "What do scholars say about the concept of tawakkul?", or
+"Can I pray with nail polish?" — and TafsirBot retrieves relevant scholarly passages,
+synthesizes a cited response, and returns it with source attribution and a scholarly disclaimer.
 
-It does not issue fatwas or religious rulings. Every response cites its sources.
+It does not issue personal fatwas or religious rulings. It presents scholarly context with citations.
 
 
 TAFSIR CORPUS
@@ -82,7 +82,7 @@ Agent/coding guidelines: AGENTS.md, CLAUDE.md
 GUARDRAILS
 ----------
 - Every response includes a disclaimer: responses are AI-assisted summaries, not fatwas.
-- Requests for religious rulings are refused and redirected to qualified scholars.
+- Fiqh / ruling questions are answered with scholarly context and an explicit note that the response is not a personal fatwa.
 - Off-topic queries are politely declined.
 - Low-confidence responses are held for human review before publication on X.
 - All published responses cite at least one Tafsir source.
