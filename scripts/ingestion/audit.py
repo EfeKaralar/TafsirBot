@@ -38,6 +38,18 @@ logger = logging.getLogger("audit")
 DEFAULT_TOP_K = 5
 SPARSE_MODEL_NAME = "Qdrant/bm42-all-minilm-l6-v2-attentions"
 
+
+def _build_filter(refs) -> dict | None:
+    """Build a Qdrant must-filter from the first resolved AyahRef."""
+    if not refs:
+        return None
+    ref = refs[0]
+    conditions: list[dict] = [{"key": "surah_number", "match": {"value": ref.surah}}]
+    if not ref.is_surah_only():
+        conditions.append({"key": "ayah_start", "range": {"gte": ref.ayah_start}})
+        conditions.append({"key": "ayah_end", "range": {"lte": ref.ayah_end}})
+    return {"must": conditions}
+
 # ── Test query set ────────────────────────────────────────────────────────────
 # 50 queries spanning: named ayahs, numeric refs, thematic, cross-verse,
 # linguistic, and edge cases that should be refused.
@@ -130,13 +142,16 @@ def retrieve(
     dense_emb: list[float],
     sparse_emb,
     top_k: int,
+    filter_: dict | None = None,
 ) -> list[dict]:
-    from qdrant_client.models import Fusion, FusionQuery, Prefetch, SparseVector
+    from qdrant_client.models import Filter, Fusion, FusionQuery, Prefetch, SparseVector
+
+    filt = Filter(**filter_) if filter_ else None
 
     result = qdrant_client.query_points(
         collection_name=collection,
         prefetch=[
-            Prefetch(query=dense_emb, using="dense", limit=top_k * 4),
+            Prefetch(query=dense_emb, using="dense", limit=top_k * 4, filter=filt),
             Prefetch(
                 query=SparseVector(
                     indices=sparse_emb.indices.tolist(),
@@ -144,6 +159,7 @@ def retrieve(
                 ),
                 using="sparse",
                 limit=top_k * 4,
+                filter=filt,
             ),
         ],
         query=FusionQuery(fusion=Fusion.RRF),
@@ -173,6 +189,7 @@ def run_audit(
     sparse_model,
     queries: list[str],
     top_k: int,
+    resolver=None,
 ) -> None:
     refuse_queries = [q for q in queries if q.startswith("REFUSE:")]
     normal_queries = [q for q in queries if not q.startswith("REFUSE:")]
@@ -184,15 +201,25 @@ def run_audit(
     results: list[QueryResult] = []
 
     for query in normal_queries:
+        filter_ = None
+        filter_tag = ""
+        if resolver is not None:
+            refs = resolver.resolve(query)
+            filter_ = _build_filter(refs)
+            if filter_:
+                ref = refs[0]
+                ayah_part = f" ayah={ref.ayah_start}-{ref.ayah_end}" if not ref.is_surah_only() else ""
+                filter_tag = f"  [filter: surah={ref.surah}{ayah_part}]"
+
         dense_emb = embed_dense(openai_client, query, model)
         sparse_emb = embed_sparse(sparse_model, query)
-        chunks = retrieve(qdrant_client, collection, dense_emb, sparse_emb, top_k)
+        chunks = retrieve(qdrant_client, collection, dense_emb, sparse_emb, top_k, filter_)
         top_score = chunks[0]["score"] if chunks else 0.0
 
         result = QueryResult(query=query, top_score=top_score, top_chunks=chunks)
         results.append(result)
 
-        print(f"\n     [{top_score:.6f}]  {query}")
+        print(f"\n     [{top_score:.6f}]  {query}{filter_tag}")
         for i, chunk in enumerate(chunks[:3], 1):
             print(
                 f"      {i}. [{chunk['scholar']}] "
@@ -230,6 +257,9 @@ def main() -> None:
     from fastembed import SparseTextEmbedding
     from qdrant_client import QdrantClient
 
+    from utils.quran_ref import QuranRef
+    from utils.ayah_resolver import AyahResolver
+
     openai_client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     qdrant_client = QdrantClient(
         host=os.environ.get("QDRANT_HOST", "localhost"),
@@ -241,6 +271,8 @@ def main() -> None:
     logger.info("Loading sparse model '%s'…", SPARSE_MODEL_NAME)
     sparse_model = SparseTextEmbedding(SPARSE_MODEL_NAME)
 
+    resolver = AyahResolver(QuranRef())
+
     queries = [args.query] if args.query else TEST_QUERIES
 
     run_audit(
@@ -251,6 +283,7 @@ def main() -> None:
         sparse_model=sparse_model,
         queries=queries,
         top_k=args.top_k,
+        resolver=resolver,
     )
 
 
