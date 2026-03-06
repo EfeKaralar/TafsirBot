@@ -103,7 +103,7 @@
 
 ## Guardrails Reference (for n8n workflow development)
 
-- `fiqh_ruling` intent → short-circuit: return standard refusal message, do not retrieve
+- `fiqh_ruling` intent → retrieve and generate; prepend FIQH_NOTE disclaimer that response is scholarly context, not a personal ruling
 - `off_topic` intent → polite refusal, do not retrieve
 - Low retrieval confidence on X channel → hold response in Postgres review queue, do not auto-publish
 - Standard disclaimer is appended to every published response (hardcoded, not LLM-generated)

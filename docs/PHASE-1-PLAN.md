@@ -198,7 +198,7 @@ Strip excess whitespace; detect language.
 Single LLM call (low-temperature, fast). Classifies into:
 - `tafsir` — proceed
 - `general_islamic` — proceed with lower confidence flag
-- `fiqh_ruling` — refuse; return standard redirect message
+- `fiqh_ruling` — retrieve and generate with scholarly context; prepend FIQH_NOTE (not a fatwa disclaimer)
 - `off_topic` — polite refusal
 
 **3. Ayah reference resolution**
