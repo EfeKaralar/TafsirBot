@@ -15,6 +15,7 @@ Usage:
     python scripts/rag_poc.py --scholar maududi "What is the theme of Surah Al-Baqarah?"
     python scripts/rag_poc.py --provider openai "What do scholars say about tawakkul?"
     python scripts/rag_poc.py --top-k 8 --verbose "Explain Ayat al-Kursi"
+    uv run python scripts/rag_poc.py --persist "Explain Quran 2:255"
 """
 
 from __future__ import annotations
@@ -550,6 +551,31 @@ def main() -> None:
         action="store_true",
         help="Print debug information including retrieved chunks.",
     )
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist the chat session and messages to Postgres.",
+    )
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help="Existing chat session UUID. Omit to create a new session when --persist is used.",
+    )
+    parser.add_argument(
+        "--channel",
+        default="local_cli",
+        help="Channel identifier stored with persisted sessions (default: local_cli).",
+    )
+    parser.add_argument(
+        "--user-id",
+        default="local_user",
+        help="User identifier stored with persisted sessions (default: local_user).",
+    )
+    parser.add_argument(
+        "--session-title",
+        default=None,
+        help="Optional title for a newly created or updated persisted session.",
+    )
     args = parser.parse_args()
 
     if args.verbose:
@@ -564,8 +590,33 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-
     print()
+
+    persistence = None
+    session_record = None
+    normalized_query = normalize(args.query)
+
+    if args.persist:
+        from persistence import PostgresPersistence
+
+        persistence = PostgresPersistence.from_env()
+        persistence.apply_migrations()
+        session_record = persistence.ensure_chat_session(
+            session_id=args.session_id,
+            channel=args.channel,
+            user_id=args.user_id,
+            title=args.session_title or normalized_query[:80],
+        )
+        persistence.add_chat_message(
+            session_id=session_record.id,
+            role="user",
+            content=normalized_query,
+            metadata={
+                "provider": args.provider,
+                "scholar_filter": args.scholar,
+                "top_k": args.top_k,
+            },
+        )
 
     result = run_pipeline(
         args.query,
@@ -588,9 +639,35 @@ def main() -> None:
             )
         print()
 
+    if persistence and session_record:
+        assistant_metadata: dict[str, object] = {
+            "provider": args.provider,
+            "scholar_filter": args.scholar,
+            "top_k": args.top_k,
+            "chunks_used": len(result.chunks),
+            "disclaimer_applied": result.disclaimer_applied,
+            "fiqh_note_applied": result.fiqh_note_applied,
+        }
+        if result.intent == "off_topic":
+            assistant_metadata["path"] = "off_topic_refusal"
+        elif not result.chunks:
+            assistant_metadata["path"] = "no_chunks"
+
+        persistence.add_chat_message(
+            session_id=session_record.id,
+            role="assistant",
+            content=result.answer,
+            intent=result.intent,
+            confidence=result.confidence,
+            citations=result.citations,
+            metadata=assistant_metadata,
+        )
+
     print(result.answer)
 
     if args.verbose:
+        if session_record:
+            print(f"[session_id: {session_record.id}]")
         print(f"\n[citations: {result.citations}]")
         print(
             f"[confidence: {result.confidence}  chunks: {len(result.chunks)}"

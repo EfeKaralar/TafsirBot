@@ -16,6 +16,7 @@ Usage:
     uv run python scripts/test_poc.py --quick           # 12 queries (2 API calls each)
     uv run python scripts/test_poc.py --verbose         # show full responses
     uv run python scripts/test_poc.py --provider openai # use GPT-4o
+    uv run python scripts/test_poc.py --quick --persist # save run + case outputs
 """
 
 from __future__ import annotations
@@ -162,7 +163,13 @@ def check_result(
 
 # ── Runner ────────────────────────────────────────────────────────────────────
 
-def run_tests(cases: list[TestCase], provider: str, verbose: bool) -> None:
+def run_tests(
+    cases: list[TestCase],
+    provider: str,
+    verbose: bool,
+    persist: bool,
+    suite_name: str,
+) -> None:
     from fastembed import SparseTextEmbedding
     from qdrant_client import QdrantClient
     import openai as _openai
@@ -190,6 +197,20 @@ def run_tests(cases: list[TestCase], provider: str, verbose: bool) -> None:
                                        if hasattr(rag_poc, "SPARSE_MODEL_NAME")
                                        else "Qdrant/bm42-all-minilm-l6-v2-attentions")
 
+    persistence = None
+    run_record = None
+    if persist:
+        from persistence import PostgresPersistence
+
+        persistence = PostgresPersistence.from_env()
+        persistence.apply_migrations()
+        run_record = persistence.create_test_run(
+            suite_name=suite_name,
+            provider=provider,
+            total_cases=len(cases),
+            metadata={"script": "scripts/test_poc.py", "verbose": verbose},
+        )
+
     passed = 0
     failed = 0
     rows: list[tuple[str, str, str, str]] = []  # status, query, intent, reason
@@ -198,49 +219,80 @@ def run_tests(cases: list[TestCase], provider: str, verbose: bool) -> None:
     print(f"TafsirBot POC — End-to-end test  |  provider={provider}  n={len(cases)}")
     print(f"{'='*72}\n")
 
-    for i, case in enumerate(cases, 1):
-        query = rag_poc.normalize(case.query)
-        intent = rag_poc.classify_intent(query, provider, clients)
+    run_status = "passed"
+    run_metadata: dict[str, object] = {}
 
-        response_text: str | None = None
+    try:
+        for i, case in enumerate(cases, 1):
+            query = rag_poc.normalize(case.query)
+            intent = rag_poc.classify_intent(query, provider, clients)
 
-        if intent == "off_topic":
-            response_text = rag_poc.OFF_TOPIC_REFUSAL
-        else:
-            refs = resolver.resolve(query)
-            qdrant_filter = rag_poc.build_qdrant_filter(refs, scholar_filter=None)
-            dense_emb = rag_poc.embed_query_text(query, clients)
-            chunks = rag_poc.retrieve_chunks(
-                qdrant, collection, query, dense_emb, sparse_model,
-                rag_poc.TOP_K, qdrant_filter,
+            response_text: str | None = None
+
+            if intent == "off_topic":
+                response_text = rag_poc.OFF_TOPIC_REFUSAL
+            else:
+                refs = resolver.resolve(query)
+                qdrant_filter = rag_poc.build_qdrant_filter(refs, scholar_filter=None)
+                dense_emb = rag_poc.embed_query_text(query, clients)
+                chunks = rag_poc.retrieve_chunks(
+                    qdrant, collection, query, dense_emb, sparse_model,
+                    rag_poc.TOP_K, qdrant_filter,
+                )
+                if chunks:
+                    prompt = rag_poc.assemble_prompt(query, chunks)
+                    raw = rag_poc.generate(prompt, provider, clients, verbose=False)
+                    result = rag_poc.post_process(raw, intent, chunks, threshold=0.0)
+                    response_text = result.text
+
+            ok, reason = check_result(case, intent, response_text)
+
+            status = "PASS" if ok else "FAIL"
+            if ok:
+                passed += 1
+            else:
+                failed += 1
+
+            rows.append((status, case.query, intent, reason))
+
+            if persistence and run_record:
+                persistence.add_test_run_case(
+                    run_id=run_record.id,
+                    query=case.query,
+                    expected=case.expected,
+                    actual_intent=intent,
+                    status="pass" if ok else "fail",
+                    reason=reason,
+                    response_text=response_text,
+                    metadata={"note": case.note},
+                )
+
+            mark = "+" if ok else "x"
+            print(f"  [{mark}] #{i:02d} {status}  intent={intent:<16}  {case.query[:55]}")
+            if verbose or not ok:
+                print(f"       reason : {reason}")
+                if verbose and response_text:
+                    preview = response_text[:200].replace("\n", " ")
+                    print(f"       preview: {preview}...")
+                print()
+
+            # Small pause to avoid hammering the OpenAI embeddings API
+            time.sleep(0.3)
+    except Exception as exc:
+        run_status = "error"
+        run_metadata["error"] = str(exc)
+        raise
+    finally:
+        if run_status != "error":
+            run_status = "passed" if failed == 0 else "failed"
+        if persistence and run_record:
+            persistence.complete_test_run(
+                run_id=run_record.id,
+                status=run_status,
+                passed_cases=passed,
+                failed_cases=failed,
+                metadata=run_metadata,
             )
-            if chunks:
-                prompt = rag_poc.assemble_prompt(query, chunks)
-                raw = rag_poc.generate(prompt, provider, clients, verbose=False)
-                result = rag_poc.post_process(raw, intent, chunks, threshold=0.0)
-                response_text = result.text
-
-        ok, reason = check_result(case, intent, response_text)
-
-        status = "PASS" if ok else "FAIL"
-        if ok:
-            passed += 1
-        else:
-            failed += 1
-
-        rows.append((status, case.query, intent, reason))
-
-        mark = "+" if ok else "x"
-        print(f"  [{mark}] #{i:02d} {status}  intent={intent:<16}  {case.query[:55]}")
-        if verbose or not ok:
-            print(f"       reason : {reason}")
-            if verbose and response_text:
-                preview = response_text[:200].replace("\n", " ")
-                print(f"       preview: {preview}...")
-            print()
-
-        # Small pause to avoid hammering the OpenAI embeddings API
-        time.sleep(0.3)
 
     print(f"\n{'='*72}")
     print(f"RESULTS  |  {passed}/{len(cases)} passed  {failed} failed")
@@ -275,10 +327,22 @@ def main() -> None:
         action="store_true",
         help="Show full response previews for every query.",
     )
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist the test run summary and per-case outputs to Postgres.",
+    )
     args = parser.parse_args()
 
     cases = QUICK_CASES if args.quick else ALL_CASES
-    run_tests(cases, provider=args.provider, verbose=args.verbose)
+    suite_name = "poc_quick" if args.quick else "poc_full"
+    run_tests(
+        cases,
+        provider=args.provider,
+        verbose=args.verbose,
+        persist=args.persist,
+        suite_name=suite_name,
+    )
 
 
 if __name__ == "__main__":

@@ -51,13 +51,14 @@ curl http://localhost:8000/health
 {
   "status": "ok",
   "version": "0.1.0",
-  "providers": ["openai", "anthropic"]
+  "providers": ["openai", "anthropic"],
+  "persistence": true
 }
 ```
 
 ---
 
-### `POST /query`
+### `POST /api/webhook`
 
 Run the full RAG pipeline for a user message.
 
@@ -92,7 +93,7 @@ Run the full RAG pipeline for a user message.
 | `options.provider` | `"anthropic"` \| `"openai"` | `LLM_PROVIDER` env | LLM provider for intent classification and generation |
 | `options.scholar` | string \| null | `null` | Restrict retrieval to a scholar slug (e.g. `"ibn_kathir"`) |
 | `options.top_k` | int 1–20 | `5` | Number of chunks to retrieve |
-| `options.save` | bool | `true` | Reserved for future Postgres session persistence |
+| `options.save` | bool | `true` | Persist the user/assistant exchange to Postgres when persistence is configured |
 
 **Response body:**
 
@@ -141,13 +142,33 @@ Run the full RAG pipeline for a user message.
 **curl example:**
 
 ```bash
-curl -s -X POST http://localhost:8000/query \
+curl -s -X POST http://localhost:8000/api/webhook \
   -H "Content-Type: application/json" \
   -d '{
     "message": "Explain Quran 2:255",
     "options": {"provider": "anthropic"}
   }' | python3 -m json.tool
 ```
+
+`POST /query` is also available as a compatibility alias during local development.
+
+---
+
+### `GET /api/sessions`
+
+List recent saved chat sessions.
+
+### `GET /api/sessions/{session_id}`
+
+Return one saved chat session plus its messages.
+
+### `GET /api/test-runs`
+
+List recent saved `test_poc` runs.
+
+### `GET /api/test-runs/{run_id}`
+
+Return one saved test run plus its per-case outputs.
 
 ---
 
@@ -176,8 +197,9 @@ uv run python scripts/rag_poc.py --provider openai --verbose "Explain tawakkul"
 
 - **Single-user / local use:** No authentication or rate-limiting is implemented.
   Add an auth middleware before exposing to the internet.
-- **No Postgres persistence:** `options.save` is accepted but ignored. Conversation
-  history is stateless — callers must supply it with each request.
+- **Postgres persistence:** If Postgres is configured and migrations were applied,
+  `options.save` persists the current user/assistant exchange. The read endpoints
+  expose saved sessions and test runs for the local UI.
 - **Synchronous handlers:** Pipeline steps (embedding, LLM calls, Qdrant) are
   blocking. For concurrent load, run with multiple uvicorn workers:
   `uvicorn scripts.api:app --workers 4`.
