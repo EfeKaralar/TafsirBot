@@ -91,6 +91,7 @@
 - Add a commit body when changing data-generation behavior or chunking logic
 - PRs must include: purpose, impacted paths, any schema changes, and sample output diffs when dist/ or chunk output changes
 - Update `sources/README.md` and relevant `docs/` files in the same PR when architecture or schema assumptions change
+- For multi-agent worktree efforts, create and push a shared integration branch first, branch all agent worktrees from it, and target agent PRs to that integration branch rather than directly to `master` (see `docs/PARALLEL-AGENT-WORKFLOW.md`)
 
 
 ## Security & Configuration

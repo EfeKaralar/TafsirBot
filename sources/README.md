@@ -119,6 +119,14 @@ scripts/ingestion/
   audit.py       -- Spot-check retrieval quality for a set of test queries
 ```
 
+**Local persistence scripts:**
+
+```
+scripts/persistence/
+  migrate.py     -- Apply SQL migrations to the local Postgres database
+  postgres.py    -- Minimal repository layer for sessions, messages, and test runs
+```
+
 **Embedding models:**
 - **Dense:** `text-embedding-3-large` (OpenAI, 3072 dims, cosine) — English-first corpus default.
 - **Sparse:** `Qdrant/bm42-all-minilm-l6-v2-attentions` via `fastembed` — BM42 sparse vectors for exact-term retrieval (verse refs, transliterated Arabic, scholar names). Downloaded ~130 MB on first run, cached in `~/.cache/fastembed/`.
@@ -218,6 +226,8 @@ This is the central n8n sub-workflow. It is channel-agnostic: every channel work
 
 A lightweight frontend (React or a hosted no-code alternative during early prototyping) communicates with n8n via a webhook POST endpoint. The n8n webhook node acts as the backend API. Session-based conversation history is maintained either in the frontend state or in a simple Postgres table keyed on session ID.
 
+For the local pre-n8n implementation contract, see `docs/WEB-POC-CONTRACT.md`.
+
 #### Telegram
 
 n8n's native Telegram Trigger node listens for incoming messages via webhook. The message is passed to the core RAG sub-workflow. The response is returned via the Telegram Send Message node. Telegram is the recommended prototyping channel due to the simplicity of the n8n integration and the lack of API approval overhead.
@@ -260,6 +270,26 @@ All components run on a single VPS using Docker Compose. The recommended minimum
 | Qdrant | qdrant/qdrant | Vector database |
 | Postgres | postgres:15 | n8n metadata, session history, review queue |
 | Nginx | nginx:alpine | Reverse proxy, TLS termination |
+
+For the current local PoC, Postgres is used for:
+
+- chat session metadata
+- persisted chat messages
+- saved test run summaries
+- per-case test outputs
+
+### Local Postgres setup
+
+1. Copy `.env.example` to `.env` and set the Postgres values.
+2. Start infrastructure with `docker compose up -d postgres qdrant`.
+3. Apply schema migrations with `uv run python scripts/persistence/migrate.py`.
+4. Run the PoC normally, or add persistence flags:
+   - `uv run python scripts/rag_poc.py --persist "Explain Quran 2:255"`
+   - `uv run python scripts/test_poc.py --quick --persist`
+
+The Python scripts run on the host by default, so `POSTGRES_HOST` should be `localhost`.
+If a future API layer or worker runs inside Docker Compose, it should use `POSTGRES_HOST=postgres`
+instead.
 
 **Recommended providers:** Hetzner CX31 or DigitalOcean 4GB Droplet for initial deployment. Upgrade to 8GB when the corpus exceeds approximately 100,000 chunks.
 
@@ -328,10 +358,22 @@ WHATSAPP_API_TOKEN=
 WHATSAPP_PHONE_NUMBER_ID=
 
 # Database
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
 POSTGRES_DB=tafsir_bot
-POSTGRES_USER=
-POSTGRES_PASSWORD=
+POSTGRES_USER=tafsirbot
+POSTGRES_PASSWORD=tafsirbot_dev_password
+POSTGRES_SSLMODE=prefer
+POSTGRES_CONNECT_TIMEOUT=5
 ```
+
+## Postgres failure modes in the current repo
+
+- Empty `POSTGRES_USER` or `POSTGRES_PASSWORD` values can prevent the Postgres container from initializing cleanly.
+- Using `POSTGRES_HOST=postgres` from a host-run Python script will fail, because that hostname only resolves inside the Compose network.
+- Changing `POSTGRES_DB`, `POSTGRES_USER`, or `POSTGRES_PASSWORD` after the `postgres_data` volume already exists can leave the container healthy but make logins fail with old credentials still persisted in the volume.
+- Starting the Python scripts before Postgres is ready can cause connection failures; the compose healthcheck helps, but migrations and app scripts still need the container to be up first.
+- Schema changes are not automatic unless `scripts/persistence/migrate.py` is run, so a fresh container without migrations will connect successfully but fail on missing tables.
 
 ---
 
@@ -353,7 +395,7 @@ POSTGRES_PASSWORD=
 - [ ] Extend chunk metadata schema with `corpus_type` and `madhab` fields; run `upsert.py --recreate`
 - [ ] Build acquisition + ingestion scripts for Phase 2 fiqh/fatawa sources
 - [ ] Tune intent classifier; validate fiqh-adjacent queries return scholarly content with correct disclaimer
-- [ ] Add conversation history persistence to Postgres (keyed on channel + user ID)
+- [x] Add conversation history persistence to Postgres (keyed on channel + user ID)
 - [ ] Port RAG pipeline to n8n; build Telegram channel workflow
 - [ ] Onboard a small group of external testers on Telegram
 - [ ] Establish a human review queue for low-confidence responses

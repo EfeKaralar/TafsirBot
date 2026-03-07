@@ -15,12 +15,12 @@ Usage:
     python scripts/rag_poc.py --scholar maududi "What is the theme of Surah Al-Baqarah?"
     python scripts/rag_poc.py --provider openai "What do scholars say about tawakkul?"
     python scripts/rag_poc.py --top-k 8 --verbose "Explain Ayat al-Kursi"
+    uv run python scripts/rag_poc.py --persist "Explain Quran 2:255"
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import re
@@ -73,6 +73,7 @@ TEMPERATURE = 0.3
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
 OPENAI_MODEL = "gpt-4o"
+SPARSE_MODEL_NAME = "Qdrant/bm42-all-minilm-l6-v2-attentions"
 
 
 # ── Step 1: Normalize input ───────────────────────────────────────────────────
@@ -276,29 +277,40 @@ def assemble_prompt(query: str, chunks: list[dict]) -> str:
 
 # ── Step 6: LLM generation ────────────────────────────────────────────────────
 
-def generate(prompt: str, provider: Provider, clients: dict, verbose: bool) -> str:
+def generate(
+    prompt: str,
+    provider: Provider,
+    clients: dict,
+    verbose: bool,
+    *,
+    conversation_history: list[dict] | None = None,
+) -> str:
     if verbose:
         logger.setLevel(logging.DEBUG)
         logger.debug("Prompt length: %d chars", len(prompt))
 
+    # Include at most the last 3 turn-pairs (6 messages) for context.
+    history = list(conversation_history[-6:]) if conversation_history else []
+
     if provider == "anthropic":
+        messages = history + [{"role": "user", "content": prompt}]
         msg = clients["anthropic"].messages.create(
             model=CLAUDE_MODEL,
             max_tokens=MAX_TOKENS,
             temperature=TEMPERATURE,
             system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
         )
         return msg.content[0].text.strip()
     else:
+        chat_messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        chat_messages.extend(history)
+        chat_messages.append({"role": "user", "content": prompt})
         resp = clients["openai"].chat.completions.create(
             model=OPENAI_MODEL,
             max_tokens=MAX_TOKENS,
             temperature=TEMPERATURE,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
+            messages=chat_messages,
         )
         return resp.choices[0].message.content.strip()
 
@@ -368,6 +380,150 @@ def post_process(
     )
 
 
+# ── Public pipeline interface ─────────────────────────────────────────────────
+
+
+@dataclass
+class PipelineResult:
+    """Structured result from run_pipeline(), suitable for API and programmatic use."""
+
+    intent: str
+    normalized_message: str
+    answer: str                      # final answer with sources + disclaimer
+    citations: list[str]             # inline [Scholar on S:V] markers
+    confidence: Literal["high", "low"]
+    disclaimer_applied: bool
+    fiqh_note_applied: bool
+    chunks: list[dict]               # raw retrieved chunks (for debugging / UI)
+
+
+def build_runtime() -> dict:
+    """
+    Initialise all expensive resources once: LLM clients, Qdrant connection,
+    AyahResolver, and the sparse embedding model.
+
+    Always loads OpenAI (required for embeddings).  Loads Anthropic only when
+    ANTHROPIC_API_KEY is present.  Raises RuntimeError if OPENAI_API_KEY is
+    missing.
+
+    Returns a dict with keys:
+        clients, qdrant_client, collection, resolver, sparse_model
+    """
+    from fastembed import SparseTextEmbedding
+    from qdrant_client import QdrantClient
+    from utils.quran_ref import QuranRef
+    from utils.ayah_resolver import AyahResolver
+
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        raise RuntimeError("OPENAI_API_KEY is required (used for dense embeddings).")
+
+    import openai as _openai
+
+    clients: dict = {}
+    clients["openai"] = _openai.OpenAI(api_key=openai_key)
+
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    if anthropic_key:
+        import anthropic as _anthropic
+
+        clients["anthropic"] = _anthropic.Anthropic(api_key=anthropic_key)
+
+    qdrant = QdrantClient(
+        host=os.environ.get("QDRANT_HOST", "localhost"),
+        port=int(os.environ.get("QDRANT_PORT", 6333)),
+    )
+    collection = os.environ.get("QDRANT_COLLECTION", "tafsir")
+    resolver = AyahResolver(QuranRef())
+    sparse_model = SparseTextEmbedding(SPARSE_MODEL_NAME)
+
+    return {
+        "clients": clients,
+        "qdrant_client": qdrant,
+        "collection": collection,
+        "resolver": resolver,
+        "sparse_model": sparse_model,
+    }
+
+
+def run_pipeline(
+    query: str,
+    *,
+    provider: Provider,
+    scholar: str | None = None,
+    top_k: int = TOP_K,
+    conversation_history: list[dict] | None = None,
+    clients: dict,
+    qdrant_client,
+    collection: str,
+    resolver,
+    sparse_model,
+) -> PipelineResult:
+    """
+    Run the full RAG pipeline end-to-end and return a structured PipelineResult.
+
+    All expensive resources must be pre-initialised (e.g. via build_runtime())
+    and passed in so they can be reused across multiple requests.
+    """
+    normalized = normalize(query)
+    intent = classify_intent(normalized, provider, clients)
+
+    if intent == "off_topic":
+        return PipelineResult(
+            intent=intent,
+            normalized_message=normalized,
+            answer=OFF_TOPIC_REFUSAL,
+            citations=[],
+            confidence="high",
+            disclaimer_applied=False,
+            fiqh_note_applied=False,
+            chunks=[],
+        )
+
+    refs = resolver.resolve(normalized)
+    scholar_filter = scholar if scholar and scholar.lower() != "all" else None
+    qdrant_filter = build_qdrant_filter(refs, scholar_filter)
+
+    dense_emb = embed_query_text(normalized, clients)
+    chunks = retrieve_chunks(
+        qdrant_client, collection, normalized, dense_emb, sparse_model, top_k, qdrant_filter
+    )
+
+    if not chunks:
+        return PipelineResult(
+            intent=intent,
+            normalized_message=normalized,
+            answer=f"No relevant Tafsir passages found for this query.{DISCLAIMER}",
+            citations=[],
+            confidence="low",
+            disclaimer_applied=True,
+            fiqh_note_applied=False,
+            chunks=[],
+        )
+
+    prompt = assemble_prompt(normalized, chunks)
+    raw_response = generate(
+        prompt, provider, clients, verbose=False,
+        conversation_history=conversation_history,
+    )
+    # threshold=0.0 because RRF scores are rank-based, not cosine distances
+    rag_result = post_process(raw_response, intent, chunks, threshold=0.0)
+
+    fiqh_applied = intent == "fiqh_ruling"
+    answer = FIQH_NOTE + rag_result.text if fiqh_applied else rag_result.text
+
+    return PipelineResult(
+        intent=intent,
+        normalized_message=normalized,
+        answer=answer,
+        citations=rag_result.citations,
+        confidence=rag_result.confidence,
+        disclaimer_applied=True,
+        fiqh_note_applied=fiqh_applied,
+        chunks=chunks,
+    )
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -395,98 +551,128 @@ def main() -> None:
         action="store_true",
         help="Print debug information including retrieved chunks.",
     )
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist the chat session and messages to Postgres.",
+    )
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help="Existing chat session UUID. Omit to create a new session when --persist is used.",
+    )
+    parser.add_argument(
+        "--channel",
+        default="local_cli",
+        help="Channel identifier stored with persisted sessions (default: local_cli).",
+    )
+    parser.add_argument(
+        "--user-id",
+        default="local_user",
+        help="User identifier stored with persisted sessions (default: local_user).",
+    )
+    parser.add_argument(
+        "--session-title",
+        default=None,
+        help="Optional title for a newly created or updated persisted session.",
+    )
     args = parser.parse_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # ── Build clients ─────────────────────────────────────────────────────────
-    from fastembed import SparseTextEmbedding
+    runtime = build_runtime()
 
-    clients: dict = {}
-
-    if args.provider == "anthropic" or True:  # always need openai for embeddings
-        import openai as _openai
-        clients["openai"] = _openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-
-    if args.provider == "anthropic":
-        import anthropic as _anthropic
-        clients["anthropic"] = _anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
-    from qdrant_client import QdrantClient
-    qdrant = QdrantClient(
-        host=os.environ.get("QDRANT_HOST", "localhost"),
-        port=int(os.environ.get("QDRANT_PORT", 6333)),
-    )
-    collection = os.environ.get("QDRANT_COLLECTION", "tafsir")
-
-    from utils.quran_ref import QuranRef
-    from utils.ayah_resolver import AyahResolver
-
-    qr = QuranRef()
-    resolver = AyahResolver(qr)
-
-    sparse_model = SparseTextEmbedding("Qdrant/bm42-all-minilm-l6-v2-attentions")
-
-    # ── Pipeline ──────────────────────────────────────────────────────────────
+    if args.provider not in runtime["clients"]:
+        print(
+            f"Error: provider {args.provider!r} is not configured — "
+            "add the corresponding API key to .env.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     print()
 
-    # Step 1: Normalize
-    query = normalize(args.query)
+    persistence = None
+    session_record = None
+    normalized_query = normalize(args.query)
 
-    # Step 2: Classify intent
-    intent = classify_intent(query, args.provider, clients)
+    if args.persist:
+        from persistence import PostgresPersistence
 
-    if intent == "off_topic":
-        print(OFF_TOPIC_REFUSAL)
-        return
+        persistence = PostgresPersistence.from_env()
+        persistence.apply_migrations()
+        session_record = persistence.ensure_chat_session(
+            session_id=args.session_id,
+            channel=args.channel,
+            user_id=args.user_id,
+            title=args.session_title or normalized_query[:80],
+        )
+        persistence.add_chat_message(
+            session_id=session_record.id,
+            role="user",
+            content=normalized_query,
+            metadata={
+                "provider": args.provider,
+                "scholar_filter": args.scholar,
+                "top_k": args.top_k,
+            },
+        )
 
-    # fiqh_ruling: do not refuse — retrieve and respond with scholarly context,
-    # but prepend FIQH_NOTE so the user knows it is not a personal ruling.
+    result = run_pipeline(
+        args.query,
+        provider=args.provider,
+        scholar=args.scholar,
+        top_k=args.top_k,
+        clients=runtime["clients"],
+        qdrant_client=runtime["qdrant_client"],
+        collection=runtime["collection"],
+        resolver=runtime["resolver"],
+        sparse_model=runtime["sparse_model"],
+    )
 
-    # Step 3: Resolve Ayah references
-    refs = resolver.resolve(query)
-    if args.verbose and refs:
-        print(f"[refs] {refs}\n")
-
-    scholar_filter = args.scholar if args.scholar and args.scholar.lower() != "all" else None
-    qdrant_filter = build_qdrant_filter(refs, scholar_filter)
-
-    # Step 4: Embed + retrieve
-    dense_emb = embed_query_text(query, clients)
-    chunks = retrieve_chunks(qdrant, collection, query, dense_emb, sparse_model, args.top_k, qdrant_filter)
-
-    if args.verbose:
-        print(f"[retrieved {len(chunks)} chunks]")
-        for c in chunks:
+    if args.verbose and result.chunks:
+        print(f"[refs resolved; retrieved {len(result.chunks)} chunks]")
+        for c in result.chunks:
             print(
                 f"  [{c['scholar']}] {c['surah_number']}:{c['ayah_start']} "
                 f"score={c['score']:.3f} — {c['content'][:80]}..."
             )
         print()
 
-    if not chunks:
-        print("No relevant Tafsir passages found for this query.")
-        print(DISCLAIMER)
-        return
+    if persistence and session_record:
+        assistant_metadata: dict[str, object] = {
+            "provider": args.provider,
+            "scholar_filter": args.scholar,
+            "top_k": args.top_k,
+            "chunks_used": len(result.chunks),
+            "disclaimer_applied": result.disclaimer_applied,
+            "fiqh_note_applied": result.fiqh_note_applied,
+        }
+        if result.intent == "off_topic":
+            assistant_metadata["path"] = "off_topic_refusal"
+        elif not result.chunks:
+            assistant_metadata["path"] = "no_chunks"
 
-    # Step 5: Assemble prompt
-    prompt = assemble_prompt(query, chunks)
+        persistence.add_chat_message(
+            session_id=session_record.id,
+            role="assistant",
+            content=result.answer,
+            intent=result.intent,
+            confidence=result.confidence,
+            citations=result.citations,
+            metadata=assistant_metadata,
+        )
 
-    # Step 6: Generate
-    raw_response = generate(prompt, args.provider, clients, args.verbose)
-
-    # Step 7: Post-process (threshold=0 — RRF scores are rank-based, not cosine)
-    result = post_process(raw_response, intent, chunks, threshold=0.0)
-
-    output = result.text
-    if intent == "fiqh_ruling":
-        output = FIQH_NOTE + output
-    print(output)
+    print(result.answer)
 
     if args.verbose:
+        if session_record:
+            print(f"[session_id: {session_record.id}]")
         print(f"\n[citations: {result.citations}]")
-        print(f"[confidence: {result.confidence}  chunks: {result.chunks_used}  intent: {result.intent}]")
+        print(
+            f"[confidence: {result.confidence}  chunks: {len(result.chunks)}"
+            f"  intent: {result.intent}]"
+        )
 
 
 if __name__ == "__main__":
