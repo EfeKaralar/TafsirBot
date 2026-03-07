@@ -218,6 +218,8 @@ This is the central n8n sub-workflow. It is channel-agnostic: every channel work
 
 A lightweight frontend (React or a hosted no-code alternative during early prototyping) communicates with n8n via a webhook POST endpoint. The n8n webhook node acts as the backend API. Session-based conversation history is maintained either in the frontend state or in a simple Postgres table keyed on session ID.
 
+For the local pre-n8n implementation contract, see `docs/WEB-POC-CONTRACT.md`.
+
 #### Telegram
 
 n8n's native Telegram Trigger node listens for incoming messages via webhook. The message is passed to the core RAG sub-workflow. The response is returned via the Telegram Send Message node. Telegram is the recommended prototyping channel due to the simplicity of the n8n integration and the lack of API approval overhead.
