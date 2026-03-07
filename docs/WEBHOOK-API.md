@@ -181,6 +181,35 @@ FastAPI auto-generates OpenAPI docs at:
 
 ---
 
+## Local web client
+
+A simple React + Vite client lives in [`web/`](/Users/alp/Projects/TafsirBot/web).
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+By default the client calls `http://127.0.0.1:8000`. Override that with:
+
+```bash
+VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
+```
+
+The UI currently supports:
+
+- live chat against `POST /api/webhook`
+- saved session browsing via `GET /api/sessions` and `GET /api/sessions/{session_id}`
+- saved test-run browsing via `GET /api/test-runs` and `GET /api/test-runs/{run_id}`
+- retrieval chunk inspection for the latest live response
+
+Current backend caveat:
+
+- persisted local session IDs should be UUID-shaped until the string session ID fix is merged to `master`
+
+---
+
 ## CLI (unchanged)
 
 The `rag_poc.py` CLI continues to work exactly as before:
