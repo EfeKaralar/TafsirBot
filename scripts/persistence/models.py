@@ -9,6 +9,7 @@ from uuid import UUID
 @dataclass(frozen=True)
 class ChatSessionRecord:
     id: UUID
+    client_session_id: str | None
     channel: str
     user_id: str
     title: str | None

@@ -107,6 +107,7 @@ class HealthResponse(BaseModel):
 
 class ChatSessionSummary(BaseModel):
     id: str
+    session_id: str
     channel: str
     user_id: str
     title: str | None
@@ -357,6 +358,7 @@ def query(req: QueryRequest) -> QueryResponse:
 def _session_summary(record) -> ChatSessionSummary:
     return ChatSessionSummary(
         id=str(record.id),
+        session_id=record.client_session_id or str(record.id),
         channel=record.channel,
         user_id=record.user_id,
         title=record.title,

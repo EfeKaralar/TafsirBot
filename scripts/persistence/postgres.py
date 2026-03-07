@@ -17,6 +17,13 @@ def _coerce_uuid(value: UUID | str) -> UUID:
     return value if isinstance(value, UUID) else UUID(value)
 
 
+def _maybe_uuid(value: UUID | str) -> UUID | None:
+    try:
+        return _coerce_uuid(value)
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 class PostgresPersistence:
     def __init__(self, config: PostgresConfig) -> None:
         self.config = config
@@ -37,7 +44,7 @@ class PostgresPersistence:
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, channel, user_id, title, created_at, updated_at
+                SELECT id, client_session_id, channel, user_id, title, created_at, updated_at
                 FROM chat_sessions
                 ORDER BY updated_at DESC
                 LIMIT %s
@@ -48,16 +55,26 @@ class PostgresPersistence:
         return [ChatSessionRecord(**row) for row in rows]
 
     def get_chat_session(self, *, session_id: UUID | str) -> ChatSessionRecord | None:
-        session_uuid = _coerce_uuid(session_id)
         with self.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, channel, user_id, title, created_at, updated_at
-                FROM chat_sessions
-                WHERE id = %s
-                """,
-                (session_uuid,),
-            )
+            session_uuid = _maybe_uuid(session_id)
+            if session_uuid is not None:
+                cur.execute(
+                    """
+                    SELECT id, client_session_id, channel, user_id, title, created_at, updated_at
+                    FROM chat_sessions
+                    WHERE id = %s OR client_session_id = %s
+                    """,
+                    (session_uuid, str(session_id)),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, client_session_id, channel, user_id, title, created_at, updated_at
+                    FROM chat_sessions
+                    WHERE client_session_id = %s
+                    """,
+                    (str(session_id),),
+                )
             row = cur.fetchone()
         return ChatSessionRecord(**row) if row else None
 
@@ -75,25 +92,42 @@ class PostgresPersistence:
                     """
                     INSERT INTO chat_sessions (channel, user_id, title)
                     VALUES (%s, %s, %s)
-                    RETURNING id, channel, user_id, title, created_at, updated_at
+                    RETURNING id, client_session_id, channel, user_id, title, created_at, updated_at
                     """,
                     (channel, user_id, title),
                 )
             else:
-                session_uuid = _coerce_uuid(session_id)
-                cur.execute(
-                    """
-                    INSERT INTO chat_sessions (id, channel, user_id, title)
-                    VALUES (%s, %s, %s, COALESCE(%s, %s))
-                    ON CONFLICT (id) DO UPDATE
-                    SET channel = EXCLUDED.channel,
-                        user_id = EXCLUDED.user_id,
-                        title = COALESCE(EXCLUDED.title, chat_sessions.title),
-                        updated_at = NOW()
-                    RETURNING id, channel, user_id, title, created_at, updated_at
-                    """,
-                    (session_uuid, channel, user_id, title, title or "Untitled session"),
-                )
+                session_uuid = _maybe_uuid(session_id)
+                session_token = str(session_id)
+                if session_uuid is not None:
+                    cur.execute(
+                        """
+                        INSERT INTO chat_sessions (id, client_session_id, channel, user_id, title)
+                        VALUES (%s, %s, %s, %s, COALESCE(%s, %s))
+                        ON CONFLICT (id) DO UPDATE
+                        SET client_session_id = COALESCE(EXCLUDED.client_session_id, chat_sessions.client_session_id),
+                            channel = EXCLUDED.channel,
+                            user_id = EXCLUDED.user_id,
+                            title = COALESCE(EXCLUDED.title, chat_sessions.title),
+                            updated_at = NOW()
+                        RETURNING id, client_session_id, channel, user_id, title, created_at, updated_at
+                        """,
+                        (session_uuid, session_token, channel, user_id, title, title or "Untitled session"),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO chat_sessions (client_session_id, channel, user_id, title)
+                        VALUES (%s, %s, %s, COALESCE(%s, %s))
+                        ON CONFLICT (client_session_id) DO UPDATE
+                        SET channel = EXCLUDED.channel,
+                            user_id = EXCLUDED.user_id,
+                            title = COALESCE(EXCLUDED.title, chat_sessions.title),
+                            updated_at = NOW()
+                        RETURNING id, client_session_id, channel, user_id, title, created_at, updated_at
+                        """,
+                        (session_token, channel, user_id, title, title or "Untitled session"),
+                    )
             row = cur.fetchone()
             conn.commit()
         return ChatSessionRecord(**row)
@@ -158,7 +192,10 @@ class PostgresPersistence:
         session_id: UUID | str,
         limit: int = 50,
     ) -> list[ChatMessageRecord]:
-        session_uuid = _coerce_uuid(session_id)
+        session = self.get_chat_session(session_id=session_id)
+        if session is None:
+            return []
+        session_uuid = session.id
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
