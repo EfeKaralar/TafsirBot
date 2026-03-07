@@ -15,6 +15,7 @@ Usage:
     python scripts/rag_poc.py --scholar maududi "What is the theme of Surah Al-Baqarah?"
     python scripts/rag_poc.py --provider openai "What do scholars say about tawakkul?"
     python scripts/rag_poc.py --top-k 8 --verbose "Explain Ayat al-Kursi"
+    uv run python scripts/rag_poc.py --persist "Explain Quran 2:255"
 """
 
 from __future__ import annotations
@@ -395,6 +396,31 @@ def main() -> None:
         action="store_true",
         help="Print debug information including retrieved chunks.",
     )
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist the chat session and messages to Postgres.",
+    )
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help="Existing chat session UUID. Omit to create a new session when --persist is used.",
+    )
+    parser.add_argument(
+        "--channel",
+        default="local_cli",
+        help="Channel identifier stored with persisted sessions (default: local_cli).",
+    )
+    parser.add_argument(
+        "--user-id",
+        default="local_user",
+        help="User identifier stored with persisted sessions (default: local_user).",
+    )
+    parser.add_argument(
+        "--session-title",
+        default=None,
+        help="Optional title for a newly created or updated persisted session.",
+    )
     args = parser.parse_args()
 
     if args.verbose:
@@ -427,6 +453,7 @@ def main() -> None:
     resolver = AyahResolver(qr)
 
     sparse_model = SparseTextEmbedding("Qdrant/bm42-all-minilm-l6-v2-attentions")
+    persistence = None
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
     print()
@@ -434,10 +461,42 @@ def main() -> None:
     # Step 1: Normalize
     query = normalize(args.query)
 
+    session_record = None
+    if args.persist:
+        from persistence import PostgresPersistence
+
+        persistence = PostgresPersistence.from_env()
+        persistence.apply_migrations()
+        session_record = persistence.ensure_chat_session(
+            session_id=args.session_id,
+            channel=args.channel,
+            user_id=args.user_id,
+            title=args.session_title or query[:80],
+        )
+        persistence.add_chat_message(
+            session_id=session_record.id,
+            role="user",
+            content=query,
+            metadata={
+                "provider": args.provider,
+                "scholar_filter": args.scholar,
+                "top_k": args.top_k,
+            },
+        )
+
     # Step 2: Classify intent
     intent = classify_intent(query, args.provider, clients)
 
     if intent == "off_topic":
+        if persistence and session_record:
+            persistence.add_chat_message(
+                session_id=session_record.id,
+                role="assistant",
+                content=OFF_TOPIC_REFUSAL,
+                intent=intent,
+                confidence="high",
+                metadata={"path": "off_topic_refusal"},
+            )
         print(OFF_TOPIC_REFUSAL)
         return
 
@@ -466,6 +525,15 @@ def main() -> None:
         print()
 
     if not chunks:
+        if persistence and session_record:
+            persistence.add_chat_message(
+                session_id=session_record.id,
+                role="assistant",
+                content="No relevant Tafsir passages found for this query.\n" + DISCLAIMER,
+                intent=intent,
+                confidence="low",
+                metadata={"path": "no_chunks"},
+            )
         print("No relevant Tafsir passages found for this query.")
         print(DISCLAIMER)
         return
@@ -482,9 +550,26 @@ def main() -> None:
     output = result.text
     if intent == "fiqh_ruling":
         output = FIQH_NOTE + output
+
+    if persistence and session_record:
+        persistence.add_chat_message(
+            session_id=session_record.id,
+            role="assistant",
+            content=output,
+            intent=result.intent,
+            confidence=result.confidence,
+            citations=result.citations,
+            metadata={
+                "chunks_used": result.chunks_used,
+                "refs": [repr(ref) for ref in refs],
+                "scholar_filter": scholar_filter,
+            },
+        )
     print(output)
 
     if args.verbose:
+        if session_record:
+            print(f"[session_id: {session_record.id}]")
         print(f"\n[citations: {result.citations}]")
         print(f"[confidence: {result.confidence}  chunks: {result.chunks_used}  intent: {result.intent}]")
 
