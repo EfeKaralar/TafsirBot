@@ -192,7 +192,10 @@ class PostgresPersistence:
         session_id: UUID | str,
         limit: int = 50,
     ) -> list[ChatMessageRecord]:
-        session_uuid = _coerce_uuid(session_id)
+        session = self.get_chat_session(session_id=session_id)
+        if session is None:
+            return []
+        session_uuid = session.id
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
