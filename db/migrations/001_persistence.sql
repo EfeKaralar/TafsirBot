@@ -2,6 +2,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_session_id TEXT UNIQUE,
     channel TEXT NOT NULL,
     user_id TEXT NOT NULL,
     title TEXT,
