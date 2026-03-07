@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   getHealth,
   getSession,
@@ -8,7 +8,6 @@ import {
   sendWebhook,
 } from './api.js';
 
-const DEFAULT_SESSION_ID = crypto.randomUUID();
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -21,6 +20,131 @@ function formatDate(value) {
 
 function isUuid(value) {
   return UUID_PATTERN.test(value);
+}
+
+function generateSessionId() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  const segments = [8, 4, 4, 4, 12];
+  return segments
+    .map((length, index) => {
+      let chunk = '';
+      while (chunk.length < length) {
+        chunk += Math.random().toString(16).slice(2);
+      }
+      const value = chunk.slice(0, length);
+      if (index === 2) {
+        return `4${value.slice(1)}`;
+      }
+      if (index === 3) {
+        return `a${value.slice(1)}`;
+      }
+      return value;
+    })
+    .join('-');
+}
+
+function escapeHtml(value) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function renderInlineMarkdown(value) {
+  let html = escapeHtml(value);
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
+  return html;
+}
+
+function markdownToHtml(source) {
+  const lines = source.split('\n');
+  const blocks = [];
+  let listItems = [];
+
+  function flushList() {
+    if (listItems.length === 0) {
+      return;
+    }
+    blocks.push(`<ul>${listItems.join('')}</ul>`);
+    listItems = [];
+  }
+
+  lines.forEach((rawLine) => {
+    const line = rawLine.trimEnd();
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushList();
+      return;
+    }
+
+    if (trimmed === '---') {
+      flushList();
+      blocks.push('<hr />');
+      return;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      flushList();
+      const level = headingMatch[1].length;
+      blocks.push(`<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`);
+      return;
+    }
+
+    const listMatch = trimmed.match(/^[-*]\s+(.*)$/) || trimmed.match(/^\d+\.\s+(.*)$/);
+    if (listMatch) {
+      listItems.push(`<li>${renderInlineMarkdown(listMatch[1])}</li>`);
+      return;
+    }
+
+    flushList();
+    blocks.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
+  });
+
+  flushList();
+  return blocks.join('');
+}
+
+function getLatestAssistantMetadata(detail) {
+  if (!detail?.messages?.length) {
+    return null;
+  }
+
+  for (let index = detail.messages.length - 1; index >= 0; index -= 1) {
+    const message = detail.messages[index];
+    if (message.role === 'assistant' && message.metadata) {
+      return message.metadata;
+    }
+  }
+
+  return null;
+}
+
+function MarkdownContent({ content, collapsible = false }) {
+  const shouldCollapse = collapsible && content.length > 700;
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="markdown-shell">
+      <div
+        className={`markdown-body ${shouldCollapse && !expanded ? 'markdown-collapsed' : ''}`}
+        dangerouslySetInnerHTML={{ __html: markdownToHtml(content) }}
+      />
+      {shouldCollapse ? (
+        <button className="text-button" onClick={() => setExpanded((value) => !value)} type="button">
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function SessionList({ items, selectedId, onSelect, onRefresh, loading }) {
@@ -100,7 +224,11 @@ function MessageBubble({ message }) {
         <strong>{message.role === 'assistant' ? 'Assistant' : 'You'}</strong>
         <span>{formatDate(message.created_at)}</span>
       </div>
-      <p>{message.content}</p>
+      {message.role === 'assistant' ? (
+        <MarkdownContent content={message.content} collapsible />
+      ) : (
+        <p>{message.content}</p>
+      )}
       {message.citations?.length > 0 ? (
         <div className="chips">
           {message.citations.map((citation) => (
@@ -114,8 +242,7 @@ function MessageBubble({ message }) {
   );
 }
 
-function ChunkPanel({ response }) {
-  const chunks = response?.chunks || [];
+function ChunkPanel({ chunks }) {
   return (
     <section className="panel detail-panel">
       <div className="panel-header">
@@ -127,7 +254,7 @@ function ChunkPanel({ response }) {
       {chunks.length === 0 ? (
         <p className="empty-state">No retrieval chunks to display for the current response.</p>
       ) : (
-        <div className="stack">
+        <div className="stack panel-content-scroll">
           {chunks.map((chunk, index) => (
             <article key={`${chunk.scholar}-${index}`} className="detail-card">
               <div className="detail-row">
@@ -159,7 +286,7 @@ function SessionDetail({ detail }) {
       {!detail ? (
         <p className="empty-state">Choose a saved session to inspect its transcript.</p>
       ) : (
-        <div className="stack">
+        <div className="stack panel-content-scroll">
           <div className="detail-card">
             <div className="detail-row">
               <strong>{detail.session.channel}</strong>
@@ -188,7 +315,7 @@ function TestRunDetail({ detail }) {
       {!detail ? (
         <p className="empty-state">Choose a saved test run to inspect case-by-case output.</p>
       ) : (
-        <div className="stack">
+        <div className="stack panel-content-scroll">
           <div className="detail-card">
             <div className="detail-row">
               <strong>{detail.run.provider}</strong>
@@ -210,7 +337,9 @@ function TestRunDetail({ detail }) {
                 {item.actual_intent ? ` · got ${item.actual_intent}` : ''}
               </small>
               {item.reason ? <p>{item.reason}</p> : null}
-              {item.response_text ? <p>{item.response_text}</p> : null}
+              {item.response_text ? (
+                <MarkdownContent content={item.response_text} collapsible />
+              ) : null}
             </article>
           ))}
         </div>
@@ -231,7 +360,7 @@ function App() {
   const [selectedRunId, setSelectedRunId] = useState('');
   const [selectedRun, setSelectedRun] = useState(null);
   const [message, setMessage] = useState('');
-  const [sessionId, setSessionId] = useState(DEFAULT_SESSION_ID);
+  const [sessionId, setSessionId] = useState(() => generateSessionId());
   const [provider, setProvider] = useState('anthropic');
   const [scholar, setScholar] = useState('');
   const [topK, setTopK] = useState(5);
@@ -259,6 +388,8 @@ function App() {
     try {
       const result = await listSessions();
       setSessions(result);
+    } catch {
+      setSessions([]);
     } finally {
       setSessionsLoading(false);
     }
@@ -269,6 +400,8 @@ function App() {
     try {
       const result = await listTestRuns();
       setTestRuns(result);
+    } catch {
+      setTestRuns([]);
     } finally {
       setTestRunsLoading(false);
     }
@@ -363,13 +496,16 @@ function App() {
   }
 
   function handleNewSession() {
-    const nextId = crypto.randomUUID();
+    const nextId = generateSessionId();
     setSessionId(nextId);
     setConversation([]);
     setCurrentResponse(null);
     setSelectedSessionId('');
     setRequestError('');
   }
+
+  const activeChunks =
+    getLatestAssistantMetadata(selectedSession)?.chunks || currentResponse?.chunks || [];
 
   return (
     <div className="app-shell">
@@ -499,7 +635,7 @@ function App() {
         </section>
 
         <aside className="detail-column">
-          <ChunkPanel response={currentResponse} />
+          <ChunkPanel chunks={activeChunks} />
           <SessionDetail detail={selectedSession} />
           <TestRunDetail detail={selectedRun} />
         </aside>
