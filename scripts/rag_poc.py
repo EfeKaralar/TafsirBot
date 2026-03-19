@@ -151,15 +151,26 @@ def classify_intent(query: str, provider: Provider, clients: dict) -> Intent:
 
 # ── Step 3: Ayah reference resolution ────────────────────────────────────────
 
-def build_qdrant_filter(refs, scholar_filter: str | None) -> dict | None:
+def build_qdrant_filter(refs, scholars: list[str] | None) -> dict | None:
     """
     Build a Qdrant must-filter from resolved AyahRefs and an optional
-    scholar restriction.  Returns None if no filters should be applied.
+    list of scholar IDs.  Returns None if no filters should be applied.
+
+    - scholars=None or scholars=[]  → no scholar filter (all scholars retrieved)
+    - scholars=["ibn_kathir"]       → single FieldCondition match
+    - scholars=["ibn_kathir", ...]  → nested should (OR) across all listed scholars
     """
     conditions: list[dict] = []
 
-    if scholar_filter:
-        conditions.append({"key": "scholar", "match": {"value": scholar_filter}})
+    if scholars:
+        if len(scholars) == 1:
+            conditions.append({"key": "scholar", "match": {"value": scholars[0]}})
+        else:
+            conditions.append({
+                "should": [
+                    {"key": "scholar", "match": {"value": s}} for s in scholars
+                ]
+            })
 
     if refs:
         # Use the first resolved reference for now; future: multi-ref OR filter
@@ -450,7 +461,7 @@ def run_pipeline(
     query: str,
     *,
     provider: Provider,
-    scholar: str | None = None,
+    scholars: list[str] | None = None,
     top_k: int = TOP_K,
     conversation_history: list[dict] | None = None,
     clients: dict,
@@ -481,8 +492,7 @@ def run_pipeline(
         )
 
     refs = resolver.resolve(normalized)
-    scholar_filter = scholar if scholar and scholar.lower() != "all" else None
-    qdrant_filter = build_qdrant_filter(refs, scholar_filter)
+    qdrant_filter = build_qdrant_filter(refs, scholars or None)
 
     dense_emb = embed_query_text(normalized, clients)
     chunks = retrieve_chunks(
@@ -536,9 +546,11 @@ def main() -> None:
         help="LLM provider (default: LLM_PROVIDER env var or 'anthropic').",
     )
     parser.add_argument(
-        "--scholar",
+        "--scholars",
         default=None,
-        help="Restrict retrieval to a specific scholar (e.g. ibn_kathir, maududi). Use 'all' or omit for no filter.",
+        nargs="+",
+        metavar="SCHOLAR",
+        help="Restrict retrieval to one or more scholars (e.g. --scholars ibn_kathir maududi). Omit for no filter.",
     )
     parser.add_argument(
         "--top-k",
@@ -613,7 +625,7 @@ def main() -> None:
             content=normalized_query,
             metadata={
                 "provider": args.provider,
-                "scholar_filter": args.scholar,
+                "scholars": args.scholars,
                 "top_k": args.top_k,
             },
         )
@@ -621,7 +633,7 @@ def main() -> None:
     result = run_pipeline(
         args.query,
         provider=args.provider,
-        scholar=args.scholar,
+        scholars=args.scholars,
         top_k=args.top_k,
         clients=runtime["clients"],
         qdrant_client=runtime["qdrant_client"],
@@ -642,7 +654,7 @@ def main() -> None:
     if persistence and session_record:
         assistant_metadata: dict[str, object] = {
             "provider": args.provider,
-            "scholar_filter": args.scholar,
+            "scholars": args.scholars,
             "top_k": args.top_k,
             "chunks_used": len(result.chunks),
             "disclaimer_applied": result.disclaimer_applied,
