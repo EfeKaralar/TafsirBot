@@ -5,15 +5,28 @@
 - `docs/` — planning and corpus-selection documents
   - `docs/TAFSIR-CHOICES.md` — per-tafsir analysis, RAG chunking strategy, audience fit
   - `docs/TAFSIR-CORPUS.mdx` — interactive React corpus dashboard component
+  - `docs/CORPUS-SOURCES.md` — source URLs, license status, and acquisition methods
+  - `docs/WEB-POC-CONTRACT.md` — frozen HTTP API contract for the local web PoC
+  - `docs/WEBHOOK-API.md` — FastAPI webhook endpoint documentation
+  - `docs/AUDIT-REPORT.md` — retrieval quality benchmarking results
 - `sources/` — source datasets and upstream content
   - `sources/quran-json/` — Git submodule: Quran JSON generation scripts and data pipeline
   - `sources/quran-json/dist/` — generated build artifacts (quran.json, quran_en.json, chapters/, verses/)
   - `sources/README.md` — full system architecture, environment variables, and phase TODO list
-- `scripts/` — ingestion and tooling scripts (to be created in Phase 1)
+- `scripts/` — Python scripts for ingestion, RAG, persistence, and the API layer
   - `scripts/ingestion/` — offline pipeline: clean.py, chunk.py, embed.py, upsert.py, audit.py
-- `n8n/` — n8n workflow exports (to be created in Phase 1)
+  - `scripts/ingestion/utils/` — ayah_resolver.py, quran_ref.py
+  - `scripts/acquisition/` — source text download and conversion scripts
+  - `scripts/persistence/` — Postgres models, migrations, config, interfaces
+  - `scripts/rag_poc.py` — Python POC RAG query pipeline
+  - `scripts/api.py` — FastAPI webhook wrapping rag_poc
+  - `scripts/test_poc.py` — end-to-end evaluation test suite
+- `web/` — React/Vite web chat frontend
+  - `web/src/App.jsx` — main chat UI component
+  - `web/src/api.js` — HTTP client for the webhook API
+- `n8n/` — n8n workflow exports (Phase 2)
   - `n8n/workflows/` — JSON exports of all n8n workflow definitions
-- `docker-compose.yml` — infrastructure: Qdrant, n8n, Postgres, Nginx (to be created in Phase 1)
+- `docker-compose.yml` — infrastructure: Qdrant + Postgres (n8n and Nginx deferred to Phase 2)
 - `.env.example` — environment variable template (secrets never committed)
 - `CLAUDE.md` — project-specific guidance for AI coding assistants
 
@@ -40,10 +53,17 @@
 - `uv run python scripts/ingestion/upsert.py --scholar all --recreate` — drop and rebuild collection (required after schema changes)
 - `uv run python scripts/ingestion/audit.py` — hybrid retrieval quality report
 
+### Web POC (API + frontend)
+- `uv run uvicorn scripts.api:app --host 0.0.0.0 --port 8000` — start FastAPI server
+- `cd web && npm install && npm run dev` — start Vite dev server
+- `uv run python scripts/rag_poc.py "What does Ibn Kathir say about 2:255?"` — run RAG pipeline from CLI
+- `uv run python scripts/test_poc.py` — run evaluation test suite
+- `uv run python scripts/test_poc.py --quick --persist` — quick run with Postgres persistence
+
 ### Infrastructure
-- `docker compose up -d` — start Qdrant, n8n, Postgres, Nginx
+- `docker compose up -d` — start Qdrant and Postgres
 - `docker compose down` — stop all services
-- `docker compose logs -f n8n` — tail n8n logs
+- `uv run python scripts/persistence/migrate.py` — apply Postgres schema migrations
 
 
 ## Coding Style & Naming Conventions
@@ -79,9 +99,10 @@
 
 ## Testing Guidelines
 
-- No formal automated test framework is configured yet
+- **Unit tests:** `uv run pytest tests/` — covers ingestion utilities (ayah resolver, quran ref lookup)
+- **End-to-end evaluation:** `uv run python scripts/test_poc.py` — 50-query test suite with scoring
+- **Retrieval quality:** `uv run python scripts/ingestion/audit.py` — hybrid retrieval quality report
 - For ingestion changes: run the full pipeline (`clean → chunk → embed → upsert`) on a single surah (e.g. Al-Fatiha, surah 1) before running on the full corpus
-- Run `audit.py` with a test query set (~50 queries) to validate retrieval quality
 - Spot-check representative chunks from `dist/` after any quran-json build change
 
 

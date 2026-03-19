@@ -77,19 +77,24 @@ Every chunk must carry:
 
 - `docs/TAFSIR-CHOICES.md` — per-tafsir analysis and RAG considerations (fact-checked)
 - `docs/TAFSIR-CORPUS.mdx` — interactive corpus dashboard (React component)
-- `docs/PHASE-1-PLAN.md` — detailed Phase 1 implementation plan
+- `docs/CORPUS-SOURCES.md` — source URLs, license status, and acquisition methods
+- `docs/AUDIT-REPORT.md` — retrieval quality benchmarking results
 - `sources/README.md` — full system architecture, environment variables, TODO list
 - `sources/quran-json/dist/quran_en.json` — full English Quran (used by ingestion for `english_text` field)
 - `sources/quran-json/dist/quran.json` — full Arabic Quran (used for `arabic_text` field)
-- `scripts/ingestion/` — ingestion pipeline (to be created in Phase 1)
-- `docker-compose.yml` — infrastructure (to be created in Phase 1)
-- `.env.example` — environment variable template (to be created in Phase 1)
+- `scripts/ingestion/` — offline ingestion pipeline (clean, chunk, embed, upsert, audit)
+- `scripts/rag_poc.py` — Python POC RAG query pipeline
+- `scripts/api.py` — FastAPI webhook wrapping rag_poc
+- `scripts/persistence/` — Postgres models, migrations, config
+- `web/` — React/Vite web chat frontend
+- `docker-compose.yml` — infrastructure: Qdrant + Postgres
+- `.env.example` — environment variable template
 
 ## Development Phases
 
-- **Phase 1:** Corpus acquisition + ingestion pipeline (clean/chunk/embed/upsert) + Qdrant (local Docker) + Python POC RAG script. No n8n yet.
-- **Phase 2:** Port to n8n; Telegram channel; conversation history; intent classifier tuning; external testers
-- **Phase 3:** Web chat, X auto-reply, WhatsApp
+- **Phase 1 (complete):** Corpus acquisition + ingestion pipeline (clean/chunk/embed/upsert) + Qdrant (local Docker) + Python POC RAG script + FastAPI + React web chat. No n8n.
+- **Phase 2 (current):** Fiqh corpus expansion; port to n8n; Telegram channel; intent classifier tuning; external testers
+- **Phase 3:** X auto-reply, WhatsApp; Arabic corpus and `tafsir_ar` collection
 - **Phase 4:** Corpus expansion (Al-Qurtubi, Al-Tabari, Jalalayn, Ibn Ashur), Arabic support, analytics
 
 ## What to Avoid
