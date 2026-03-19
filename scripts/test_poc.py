@@ -233,7 +233,7 @@ def run_tests(
                 response_text = rag_poc.OFF_TOPIC_REFUSAL
             else:
                 refs = resolver.resolve(query)
-                qdrant_filter = rag_poc.build_qdrant_filter(refs, scholar_filter=None)
+                qdrant_filter = rag_poc.build_qdrant_filter(refs, scholars=None)
                 dense_emb = rag_poc.embed_query_text(query, clients)
                 chunks = rag_poc.retrieve_chunks(
                     qdrant, collection, query, dense_emb, sparse_model,

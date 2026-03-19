@@ -56,7 +56,7 @@ class QueryOptions(BaseModel):
     provider: Literal["anthropic", "openai"] = Field(
         default_factory=lambda: os.environ.get("LLM_PROVIDER", "anthropic")
     )
-    scholar: str | None = None
+    scholars: list[str] | None = None
     top_k: int = Field(default=rag_poc.TOP_K, ge=1, le=20)
     save: bool = True
 
@@ -251,7 +251,7 @@ def _save_chat_exchange(
         content=response.normalized_message,
         metadata={
             "provider": req.options.provider,
-            "scholar_filter": req.options.scholar,
+            "scholars": req.options.scholars,
             "top_k": req.options.top_k,
         },
     )
@@ -300,7 +300,7 @@ def _build_query_response(req: QueryRequest) -> QueryResponse:
         result: rag_poc.PipelineResult = rag_poc.run_pipeline(
             req.message,
             provider=provider,
-            scholar=req.options.scholar,
+            scholars=req.options.scholars,
             top_k=req.options.top_k,
             conversation_history=conversation_history,
             clients=runtime["clients"],
@@ -352,7 +352,7 @@ def _build_query_response(req: QueryRequest) -> QueryResponse:
             "user_id": req.user_id,
             "provider": provider,
             "top_k": req.options.top_k,
-            "scholar_filter": req.options.scholar,
+            "scholars": req.options.scholars or None,
             "elapsed_ms": elapsed_ms,
         },
     )
