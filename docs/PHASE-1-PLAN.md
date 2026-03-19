@@ -256,15 +256,15 @@ Extract citations. Append standard disclaimer. Print response.
 
 ## Step 6 — Handoff Checklist (before Phase 2 begins)
 
-- [ ] `docs/CORPUS-SOURCES.md` created and approved
-- [ ] `docker compose up -d` runs cleanly locally
-- [ ] Full corpus for Ibn Kathir + Maududi ingested into Qdrant
-- [ ] `audit.py` run; all pass criteria met
-- [ ] `rag_poc.py` tested against all 50 evaluation queries
-- [ ] All 5 off-topic edge-case queries correctly refused
-- [ ] All 5 fiqh / ruling-style edge cases handled with scholarly context (not refused)
-- [ ] `data/` directory added to `.gitignore` (raw and processed tafsir text must not be committed)
-- [ ] Chunk counts, mean scores, and any quality issues documented in `docs/AUDIT-REPORT.md`
+- [x] `docs/CORPUS-SOURCES.md` created and approved
+- [x] `docker compose up -d` runs cleanly locally
+- [x] Full corpus for Ibn Kathir + Maududi ingested into Qdrant
+- [x] `audit.py` run; all pass criteria met
+- [x] `data/` directory added to `.gitignore` (raw and processed tafsir text must not be committed)
+- [x] Chunk counts, mean scores, and any quality issues documented in `docs/AUDIT-REPORT.md`
+- [ ] `rag_poc.py` tested against all 50 evaluation queries (full suite)
+- [ ] All 5 off-topic edge-case queries correctly refused (manual verification)
+- [ ] All 5 fiqh / ruling-style edge cases handled with scholarly context (manual verification)
 
 ---
 
