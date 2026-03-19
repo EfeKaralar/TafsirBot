@@ -588,7 +588,7 @@ def main() -> None:
         default=None,
         help="Optional title for a newly created or updated persisted session.",
     )
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)

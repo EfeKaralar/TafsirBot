@@ -352,7 +352,7 @@ def _build_query_response(req: QueryRequest) -> QueryResponse:
             "user_id": req.user_id,
             "provider": provider,
             "top_k": req.options.top_k,
-            "scholars": req.options.scholars,
+            "scholars": req.options.scholars or None,
             "elapsed_ms": elapsed_ms,
         },
     )
