@@ -547,10 +547,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--scholars",
-        default=None,
-        nargs="+",
+        action="append",
+        dest="scholars",
         metavar="SCHOLAR",
-        help="Restrict retrieval to one or more scholars (e.g. --scholars ibn_kathir maududi). Omit for no filter.",
+        default=None,
+        help=(
+            "Restrict retrieval to a scholar. Repeat to add more: "
+            "--scholars ibn_kathir --scholars maududi. Omit for no filter."
+        ),
     )
     parser.add_argument(
         "--top-k",
@@ -588,7 +592,7 @@ def main() -> None:
         default=None,
         help="Optional title for a newly created or updated persisted session.",
     )
-    args = parser.parse_intermixed_args()
+    args = parser.parse_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
