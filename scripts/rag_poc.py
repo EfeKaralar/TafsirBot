@@ -149,7 +149,7 @@ def classify_intent(query: str, provider: Provider, clients: dict) -> Intent:
     return intent  # type: ignore[return-value]
 
 
-# ── Step 3: Ayah reference resolution ────────────────────────────────────────
+# ── Step 3: Ayah reference resolution + filters ───────────────────────────────
 
 def build_qdrant_filter(refs, scholars: list[str] | None) -> dict | None:
     """
@@ -181,6 +181,28 @@ def build_qdrant_filter(refs, scholars: list[str] | None) -> dict | None:
             conditions.append({"key": "ayah_end", "range": {"lte": ref.ayah_end}})
 
     return {"must": conditions} if conditions else None
+
+
+def build_hadith_filter(hadith_collections: list[str] | None) -> dict | None:
+    """
+    Build a Qdrant filter scoped to Hadith chunks.
+
+    Filters on the 'collection' payload field (e.g. 'bukhari', 'muslim').
+    - hadith_collections=None or []    → no filter (all hadith collections)
+    - hadith_collections=["bukhari"]   → single FieldCondition match
+    - hadith_collections=["bukhari", "muslim"] → nested should (OR)
+    """
+    if not hadith_collections:
+        return None
+    if len(hadith_collections) == 1:
+        return {"must": [{"key": "collection", "match": {"value": hadith_collections[0]}}]}
+    return {
+        "must": [{
+            "should": [
+                {"key": "collection", "match": {"value": c}} for c in hadith_collections
+            ]
+        }]
+    }
 
 
 # ── Step 4: Hybrid retrieval ──────────────────────────────────────────────────
@@ -418,7 +440,7 @@ def build_runtime() -> dict:
     missing.
 
     Returns a dict with keys:
-        clients, qdrant_client, collection, resolver, sparse_model
+        clients, qdrant_client, collection, hadith_collection, resolver, sparse_model
     """
     from fastembed import SparseTextEmbedding
     from qdrant_client import QdrantClient
@@ -445,6 +467,7 @@ def build_runtime() -> dict:
         port=int(os.environ.get("QDRANT_PORT", 6333)),
     )
     collection = os.environ.get("QDRANT_COLLECTION", "tafsir")
+    hadith_collection = os.environ.get("QDRANT_HADITH_COLLECTION", "hadith")
     resolver = AyahResolver(QuranRef())
     sparse_model = SparseTextEmbedding(SPARSE_MODEL_NAME)
 
@@ -452,6 +475,7 @@ def build_runtime() -> dict:
         "clients": clients,
         "qdrant_client": qdrant,
         "collection": collection,
+        "hadith_collection": hadith_collection,
         "resolver": resolver,
         "sparse_model": sparse_model,
     }
@@ -462,6 +486,9 @@ def run_pipeline(
     *,
     provider: Provider,
     scholars: list[str] | None = None,
+    hadith_enabled: bool = False,
+    hadith_collection: str | None = None,
+    hadith_collections: list[str] | None = None,
     top_k: int = TOP_K,
     conversation_history: list[dict] | None = None,
     clients: dict,
@@ -475,6 +502,11 @@ def run_pipeline(
 
     All expensive resources must be pre-initialised (e.g. via build_runtime())
     and passed in so they can be reused across multiple requests.
+
+    When hadith_enabled=True, the pipeline also queries the hadith Qdrant
+    collection and merges results with Tafsir chunks before generation.
+    If the hadith collection is missing or empty, a warning is logged and
+    the pipeline continues with Tafsir chunks only — no error is raised.
     """
     normalized = normalize(query)
     intent = classify_intent(normalized, provider, clients)
@@ -495,9 +527,31 @@ def run_pipeline(
     qdrant_filter = build_qdrant_filter(refs, scholars or None)
 
     dense_emb = embed_query_text(normalized, clients)
-    chunks = retrieve_chunks(
+    tafsir_chunks = retrieve_chunks(
         qdrant_client, collection, normalized, dense_emb, sparse_model, top_k, qdrant_filter
     )
+
+    # ── Optional Hadith retrieval ─────────────────────────────────────────────
+    hadith_chunks: list[dict] = []
+    if hadith_enabled and hadith_collection:
+        try:
+            h_filter = build_hadith_filter(hadith_collections or None)
+            raw_hadith = retrieve_chunks(
+                qdrant_client, hadith_collection, normalized, dense_emb,
+                sparse_model, top_k, h_filter,
+            )
+            # Normalise: use 'collection' payload field as 'scholar' so the
+            # rest of the pipeline (assemble_prompt, citations) works unchanged.
+            for chunk in raw_hadith:
+                if not chunk.get("scholar") or chunk["scholar"] == "unknown":
+                    chunk["scholar"] = chunk.get("collection", "hadith")
+            hadith_chunks = raw_hadith
+            logger.info("Hadith retrieval: %d chunks from %s", len(hadith_chunks), hadith_collection)
+        except Exception as exc:
+            logger.warning("Hadith retrieval skipped (%s): %s", hadith_collection, exc)
+
+    # Merge Tafsir + Hadith chunks; re-rank by score descending, keep top_k
+    chunks = sorted(tafsir_chunks + hadith_chunks, key=lambda c: c["score"], reverse=True)[:top_k]
 
     if not chunks:
         return PipelineResult(
