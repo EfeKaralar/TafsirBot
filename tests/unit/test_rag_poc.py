@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "ingestion"))
 
 import rag_poc
-from rag_poc import build_qdrant_filter
+from rag_poc import build_hadith_filter, build_qdrant_filter
 from utils.ayah_resolver import AyahRef
 
 
@@ -113,6 +113,43 @@ class TestBuildQdrantFilterWithRef:
         end_cond = next(c for c in result["must"] if c.get("key") == "ayah_end")
         assert start_cond["range"]["gte"] == 255
         assert end_cond["range"]["lte"] == 255
+
+
+# ── build_hadith_filter ───────────────────────────────────────────────────────
+
+
+class TestBuildHadithFilter:
+    def test_none_returns_none(self):
+        assert build_hadith_filter(None) is None
+
+    def test_empty_list_returns_none(self):
+        assert build_hadith_filter([]) is None
+
+    def test_single_collection(self):
+        result = build_hadith_filter(["bukhari"])
+        assert result == {
+            "must": [{"key": "collection", "match": {"value": "bukhari"}}]
+        }
+
+    def test_two_collections_produces_should(self):
+        result = build_hadith_filter(["bukhari", "muslim"])
+        assert result is not None
+        should_block = result["must"][0]
+        assert "should" in should_block
+        values = {c["match"]["value"] for c in should_block["should"]}
+        assert values == {"bukhari", "muslim"}
+
+    def test_all_six_kutub_al_sitta(self):
+        collections = ["bukhari", "muslim", "abu_dawud", "tirmidhi", "nasai", "ibn_majah"]
+        result = build_hadith_filter(collections)
+        should_block = result["must"][0]
+        values = {c["match"]["value"] for c in should_block["should"]}
+        assert values == set(collections)
+
+    def test_uses_collection_key_not_scholar(self):
+        result = build_hadith_filter(["bukhari"])
+        cond = result["must"][0]
+        assert cond["key"] == "collection"
 
 
 # ── normalize ─────────────────────────────────────────────────────────────────

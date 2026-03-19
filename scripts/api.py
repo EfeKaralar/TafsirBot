@@ -57,6 +57,8 @@ class QueryOptions(BaseModel):
         default_factory=lambda: os.environ.get("LLM_PROVIDER", "anthropic")
     )
     scholars: list[str] | None = None
+    hadith_enabled: bool = False
+    hadith_collections: list[str] | None = None
     top_k: int = Field(default=rag_poc.TOP_K, ge=1, le=20)
     save: bool = True
 
@@ -252,6 +254,8 @@ def _save_chat_exchange(
         metadata={
             "provider": req.options.provider,
             "scholars": req.options.scholars,
+            "hadith_enabled": req.options.hadith_enabled,
+            "hadith_collections": req.options.hadith_collections,
             "top_k": req.options.top_k,
         },
     )
@@ -301,6 +305,9 @@ def _build_query_response(req: QueryRequest) -> QueryResponse:
             req.message,
             provider=provider,
             scholars=req.options.scholars,
+            hadith_enabled=req.options.hadith_enabled,
+            hadith_collection=runtime["hadith_collection"],
+            hadith_collections=req.options.hadith_collections,
             top_k=req.options.top_k,
             conversation_history=conversation_history,
             clients=runtime["clients"],
@@ -353,6 +360,8 @@ def _build_query_response(req: QueryRequest) -> QueryResponse:
             "provider": provider,
             "top_k": req.options.top_k,
             "scholars": req.options.scholars or None,
+            "hadith_enabled": req.options.hadith_enabled,
+            "hadith_collections": req.options.hadith_collections or None,
             "elapsed_ms": elapsed_ms,
         },
     )
