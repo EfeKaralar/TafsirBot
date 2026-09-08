@@ -1,6 +1,6 @@
 # AI Islamic Scholarly Assistant (TafsirBot)
 
-An AI-powered Islamic scholarly assistant built on a Retrieval-Augmented Generation (RAG) pipeline, orchestrated through self-hosted n8n, and delivered across multiple channels including a web chat interface, Telegram, WhatsApp, and X (Twitter).
+An AI-powered Islamic scholarly assistant built on a Retrieval-Augmented Generation (RAG) pipeline, orchestrated with LangGraph, and delivered across multiple channels including a web chat interface, Telegram, WhatsApp, and X (Twitter).
 
 The corpus covers Quranic commentary (Tafsir), Islamic jurisprudence (fiqh), and scholarly legal opinions (fatawa). The bot presents what scholars say on any Islamic topic — including jurisprudential questions — with a clear disclaimer that responses are not personal rulings. Only queries entirely unrelated to Islam are declined.
 
@@ -13,7 +13,7 @@ The corpus covers Quranic commentary (Tafsir), Islamic jurisprudence (fiqh), and
   - [Overview](#overview)
   - [1. Corpus Ingestion Layer](#1-corpus-ingestion-layer)
   - [2. Vector Storage](#2-vector-storage)
-  - [3. RAG Core — n8n Orchestration](#3-rag-core--n8n-orchestration)
+  - [3. RAG Core — LangGraph Orchestration](#3-rag-core--langgraph-orchestration)
   - [4. Channel Delivery Layer](#4-channel-delivery-layer)
   - [5. Infrastructure & Deployment](#5-infrastructure--deployment)
 - [Guardrails & Scholarly Integrity](#guardrails--scholarly-integrity)
@@ -37,7 +37,11 @@ The corpus covers Quranic commentary (Tafsir), Islamic jurisprudence (fiqh), and
 
 ### Overview
 
-The system is divided into four layers: ingestion, storage, RAG orchestration, and delivery. All query processing flows through a single canonical n8n workflow regardless of which channel initiated the request. Channel-specific n8n workflows handle platform normalization and then call the core RAG workflow as a sub-workflow.
+The system is divided into four layers: ingestion, storage, RAG orchestration, and delivery. All query processing flows through a single compiled LangGraph `StateGraph` regardless of which channel initiated the request. Channel adapters handle platform normalization and then call one FastAPI surface; they contain no pipeline logic.
+
+> **Architecture contract:** `docs/LANGGRAPH-ARCHITECTURE.md` is authoritative for graph topology,
+> state schema, version pins, and the SSE event vocabulary. The summary below is orientation only.
+> n8n was evaluated and dropped on 2026-09-08 — see epic #38.
 
 ```
 +--------------------------------------------------------------+
@@ -60,14 +64,20 @@ The system is divided into four layers: ingestion, storage, RAG orchestration, a
                              |
                              v
 +--------------------------------------------------------------+
-|              RAG CORE WORKFLOW (n8n sub-workflow)            |
-|  1. Input normalization                                      |
-|  2. Intent classification                                    |
-|  3. Ayah reference resolution                                |
-|  4. Vector retrieval (with metadata filtering)               |
-|  5. Prompt assembly                                          |
-|  6. LLM generation                                           |
-|  7. Post-processing & citation formatting                    |
+|              RAG CORE (LangGraph StateGraph)                 |
+|  normalize -> classify -> plan_query -> plan_retrieval       |
+|      -> retrieve (parallel fan-out) -> fuse -> grade         |
+|      -> generate -> verify -> finalize -> persist            |
+|                                                              |
+|  Loops: grade -> broaden -> retrieve  (adaptive retrieval)   |
+|         verify -> generate            (citation retry)       |
+|  Held:  finalize -> human_review      (interrupt)            |
++--------------------------------------------------------------+
+                             |
+                             v
++--------------------------------------------------------------+
+|                   FastAPI (one surface)                      |
+|  POST /query  |  POST /api/webhook  |  POST /api/query/stream |
 +--------------------------------------------------------------+
                              |
           +------------------+------------------+
@@ -76,8 +86,7 @@ The system is divided into four layers: ingestion, storage, RAG orchestration, a
   +---------------+  +---------------+  +---------------+
   |  Web / Tele-  |  |  X (Twitter)  |  |  WhatsApp     |
   |  gram Chat    |  |  Auto-reply   |  |  (Meta Cloud  |
-  |  (Webhook     |  |  (Scheduled   |  |   API)        |
-  |   trigger)    |  |   polling)    |  |               |
+  |               |  |  (polling)    |  |   API)        |
   +---------------+  +---------------+  +---------------+
 ```
 
@@ -141,7 +150,7 @@ For the full corpus selection discussion — Tafsir, fiqh, and fatawa — see [d
 
 **Database:** Qdrant, self-hosted via Docker.
 
-Qdrant is chosen for its native metadata filtering, strong n8n integration, and low operational overhead compared to Weaviate. All retrieval requests apply a metadata pre-filter on `surah_number` and `ayah_start`/`ayah_end` when the query contains a specific Ayah reference, significantly narrowing the candidate set before semantic ranking.
+Qdrant is chosen for its native metadata filtering, server-side RRF fusion of dense and sparse prefetch branches, and low operational overhead compared to Weaviate. All retrieval requests apply a metadata pre-filter on `surah_number` and `ayah_start`/`ayah_end` when the query contains a specific Ayah reference, significantly narrowing the candidate set before semantic ranking.
 
 **Collection architecture:**
 
@@ -172,9 +181,11 @@ To rebuild the collection with a new schema, run `upsert.py --recreate`.
 
 ---
 
-### 3. RAG Core — n8n Orchestration
+### 3. RAG Core — LangGraph Orchestration
 
-This is the central n8n sub-workflow. It is channel-agnostic: every channel workflow calls it with a normalized input object and receives a normalized response object.
+This is the compiled `StateGraph`. It is channel-agnostic: every channel adapter calls the same FastAPI endpoint with a normalized input object and receives a normalized response object.
+
+Full topology, state schema, and reducer rules live in `docs/LANGGRAPH-ARCHITECTURE.md`.
 
 **Input schema:**
 
@@ -198,21 +209,27 @@ This is the central n8n sub-workflow. It is channel-agnostic: every channel work
 }
 ```
 
-**Workflow steps:**
+**Graph nodes:**
 
-**Step 1 — Input Normalization.** Strip @mentions, hashtags, excess whitespace, and platform-specific formatting. Detect language.
+**`normalize`.** Strip @mentions, hashtags, excess whitespace, and platform-specific formatting. Mints the `turn_id` used as the read-model idempotency key.
 
-**Step 2 — Intent Classification.** A fast, low-cost LLM call classifies the query into one of four intents: `tafsir`, `general_islamic`, `fiqh_ruling`, or `off_topic`. Only `off_topic` queries are refused. `fiqh_ruling` queries — including first-person questions like "Can I pray with nail polish?" — proceed to retrieval and generation; the response is prefixed with a note that it presents scholarly perspectives, not a personal ruling. `general_islamic` queries proceed with a lower-confidence flag.
+**`classify`.** A fast, low-cost LLM call classifies the query into one of four intents: `tafsir`, `general_islamic`, `fiqh_ruling`, or `off_topic`. Only `off_topic` short-circuits — it routes straight to `refuse` with zero embedding and zero Qdrant calls. `fiqh_ruling` queries — including first-person questions like "Can I pray with nail polish?" — proceed to retrieval and generation; `finalize` prepends a note that the response presents scholarly perspectives, not a personal ruling.
 
-**Step 3 — Ayah Reference Resolution.** A regex pass and then a lookup against a static Quran JSON file resolves any Ayah references in the query (e.g. "2:255", "Ayat al-Kursi", "Al-Fatiha") to normalized `surah_number` / `ayah_start` / `ayah_end` values. These become hard filters in the retrieval step. If no reference is detected, retrieval proceeds without a metadata filter.
+**`plan_query`.** Rewrites conversational follow-ups into a standalone question using checkpointed history, and decomposes multi-part questions into up to three sub-queries. Then resolves Ayah references per sub-query ("2:255", "Ayat al-Kursi", "Al-Fatiha") to `surah_number` / `ayah_start` / `ayah_end`, which become metadata filters. **Overlap semantics**, not containment — a chunk spanning 2:253–260 must match a query for 2:255.
 
-**Step 4 — Hybrid Retrieval.** The query is embedded with both the dense model (OpenAI) and the sparse BM42 model (fastembed). Qdrant runs two prefetch branches (dense + sparse) and fuses results via server-side RRF. Metadata pre-filters are applied inside each prefetch block when an Ayah reference was resolved.
+**`retrieve` (parallel fan-out).** One `Send` per sub-query × collection. Each embeds with both the dense model (OpenAI) and the sparse BM42 model (fastembed); Qdrant runs two prefetch branches and fuses via server-side RRF.
 
-**Step 5 — Prompt Assembly.** The system prompt establishes the bot's role (scholarly assistant, not a mufti), its citation requirements, and the disclaimer obligation. Retrieved chunks are inserted as labeled context blocks. The last three to five turns of conversation history are appended for follow-up coherence.
+**`fuse`.** Per-call RRF scores are not comparable across calls, so results are merged by **client-side rank fusion** (`Σ weight / (60 + rank)`), not by sorting on score.
 
-**Step 6 — LLM Generation.** Primary model: GPT-4o or Claude Sonnet. Temperature: 0.3. Max tokens: 800 for most channels, 500 for X to allow room for threading logic. The model is instructed to cite sources using the format `[Scholar Name on Surah:Ayah]`.
+**`grade`.** One cheap structured call scores all retrieved chunks for relevance. A weak batch routes to `broaden`, which walks a relaxation ladder (`widen_k` → `drop_ayah` → `neighbour_ayat` → `drop_scholar`) and retries, bounded at two attempts. This produces the real `confidence` signal.
 
-**Step 7 — Post-Processing.** Citations are extracted and structured. If retrieval scores were uniformly low (confidence = low), the response is flagged and optionally routed to a human moderation queue rather than auto-published (especially relevant for the X channel). The platform-specific length limit is enforced. The standard disclaimer is appended.
+**`generate`.** Primary model: Claude Sonnet or GPT-4o. Temperature 0.3, max tokens 800 (500 for X). Retrieved chunks are inserted as labeled context blocks; the system prompt establishes the scholarly-assistant role, citation format `[Scholar Name on Surah:Ayah]`, and the disclaimer obligation. This is the only node that streams tokens.
+
+**`verify`.** Each citation is resolved against the chunks actually retrieved. Ungrounded citations are stripped and confidence drops; if *zero* citations are grounded the guardrail is violated and the answer is regenerated once. This is what makes "every response cites at least one source" enforceable rather than aspirational.
+
+**`finalize`.** Computes `confidence` from grading and verification, appends the Sources block and standard disclaimer, prepends `FIQH_NOTE` when applicable, and sets `review_required` for low-confidence responses on channels that require human approval.
+
+**`human_review` / `persist`.** Held responses interrupt before anything is written. Approved ones are recorded to the `chat_messages` read-model, best-effort — a persistence failure never discards a generated answer.
 
 **Standard disclaimer (appended to every response):**
 
@@ -224,37 +241,37 @@ This is the central n8n sub-workflow. It is channel-agnostic: every channel work
 
 #### Web Chat
 
-A lightweight frontend (React or a hosted no-code alternative during early prototyping) communicates with n8n via a webhook POST endpoint. The n8n webhook node acts as the backend API. Session-based conversation history is maintained either in the frontend state or in a simple Postgres table keyed on session ID.
+A React/Vite frontend posts to the FastAPI surface — `POST /api/query/stream` for token streaming, falling back to `POST /api/webhook`. Conversation history is owned by the LangGraph checkpointer and keyed on `thread_id`; the frontend no longer needs to replay it.
 
-For the local pre-n8n implementation contract, see `docs/WEB-POC-CONTRACT.md`.
+For the web implementation contract, see `docs/WEB-POC-CONTRACT.md`.
 
 #### Telegram
 
-n8n's native Telegram Trigger node listens for incoming messages via webhook. The message is passed to the core RAG sub-workflow. The response is returned via the Telegram Send Message node. Telegram is the recommended prototyping channel due to the simplicity of the n8n integration and the lack of API approval overhead.
+A `python-telegram-bot` polling adapter maps `chat_id` → `session_id` and posts to the same endpoint with `channel: "telegram"`. Telegram is the recommended prototyping channel: no API approval overhead, and its message-editing support makes streaming genuinely usable. See issue #17.
 
 #### WhatsApp
 
-The Meta Cloud API (or a middleware provider such as Twilio or 360dialog) is used for WhatsApp. The integration pattern is identical to Telegram: inbound webhook trigger, core RAG sub-workflow call, outbound send node.
+The Meta Cloud API (or a middleware provider such as Twilio or 360dialog) is used for WhatsApp. The pattern is identical to Telegram: inbound webhook → the same endpoint → outbound send.
 
 #### X (Twitter) Auto-Reply
 
 X requires a polling approach rather than a webhook, as filtered stream access requires elevated API access tiers.
 
 ```
-n8n Schedule Trigger (every 60–120 seconds)
-  --> Twitter Search node: query "@YourBotHandle"
+Scheduled poller (every 60–120 seconds)
+  --> Search: "@YourBotHandle"
   --> Filter: exclude already-processed tweet IDs
-       (last processed ID stored in n8n static data or Postgres)
+       (last processed ID stored in Postgres)
   --> For each new mention:
-        --> Core RAG sub-workflow
+        --> POST /api/webhook with channel: "x"
         --> Format response (thread if > 280 characters)
-        --> Twitter Post node: reply to original tweet
+        --> Reply to original tweet
         --> Store tweet ID as processed
 ```
 
 X API tier requirements: Basic tier ($100/month) is the minimum for write access at any meaningful volume. During prototyping, volume is low enough that manual rate limit management is feasible. The free tier does not support write access.
 
-If response confidence is flagged as low, the tweet is held in a review queue (a Postgres table) rather than published automatically.
+If response confidence is flagged as low, the graph interrupts before persisting and the response is held for human approval rather than published automatically.
 
 ---
 
@@ -266,10 +283,10 @@ All components run on a single VPS using Docker Compose. The recommended minimum
 
 | Service | Image | Notes |
 |---|---|---|
-| n8n | n8nio/n8n | Workflow orchestrator |
+| API | built from repo | FastAPI + the compiled LangGraph graph, via uvicorn |
 | Qdrant | qdrant/qdrant | Vector database |
-| Postgres | postgres:15 | n8n metadata, session history, review queue |
-| Nginx | nginx:alpine | Reverse proxy, TLS termination |
+| Postgres | postgres:15 | LangGraph checkpoints, session history, review queue, eval runs |
+| Nginx | nginx:alpine | Reverse proxy, TLS termination. **SSE needs `proxy_buffering off; proxy_read_timeout 300s;`** |
 
 For the current local PoC, Postgres is used for:
 
@@ -333,15 +350,10 @@ ANTHROPIC_API_KEY=           # if using Claude
 EMBEDDING_MODEL=text-embedding-3-large
 
 # Vector DB
-QDRANT_HOST=qdrant
+QDRANT_HOST=localhost        # `qdrant` from inside the Compose network
 QDRANT_PORT=6333
 QDRANT_COLLECTION=tafsir
-
-# n8n
-N8N_BASIC_AUTH_USER=
-N8N_BASIC_AUTH_PASSWORD=
-N8N_HOST=
-WEBHOOK_URL=
+QDRANT_HADITH_COLLECTION=hadith
 
 # Telegram
 TELEGRAM_BOT_TOKEN=
@@ -365,7 +377,14 @@ POSTGRES_USER=tafsirbot
 POSTGRES_PASSWORD=tafsirbot_dev_password
 POSTGRES_SSLMODE=prefer
 POSTGRES_CONNECT_TIMEOUT=5
+
+# Migrations — on in dev; off in prod, where a deploy step runs them
+# (prevents N uvicorn workers racing on DDL)
+TAFSIRBOT_RUN_MIGRATIONS=1
 ```
+
+> This list is aspirational for the channel variables. `.env.example` is the authoritative set of
+> variables the code actually reads today; after epic #38, `src/tafsirbot/settings.py` is.
 
 ## Postgres failure modes in the current repo
 
@@ -396,9 +415,10 @@ POSTGRES_CONNECT_TIMEOUT=5
 - [ ] Build acquisition + ingestion scripts for Phase 2 fiqh/fatawa sources
 - [ ] Tune intent classifier; validate fiqh-adjacent queries return scholarly content with correct disclaimer
 - [x] Add conversation history persistence to Postgres (keyed on channel + user ID)
-- [ ] Port RAG pipeline to n8n; build Telegram channel workflow
+- [ ] **LangGraph rearchitecture + `src/tafsirbot/` package overhaul — epic #38, PRs #27–#37**
+- [ ] Build the Telegram channel adapter (#17)
 - [ ] Onboard a small group of external testers on Telegram
-- [ ] Establish a human review queue for low-confidence responses
+- [ ] Establish a human review queue for low-confidence responses (#36)
 - [ ] Have a person with Islamic scholarly knowledge audit a sample of responses for accuracy
 
 ### Phase 3 — Arabic Corpus + Additional Channels
@@ -406,16 +426,16 @@ POSTGRES_CONNECT_TIMEOUT=5
 - [ ] Research Arabic-capable sparse embedding model to pair with `multilingual-e5-large`
 - [ ] Create `tafsir_ar` Qdrant collection; ingest first Arabic source (e.g. Kuwaiti Fiqh Encyclopedia)
 - [ ] Build language-routing layer in query pipeline (detect language → fan out to EN + AR collections)
-- [ ] Build the web chat frontend and connect it to the n8n webhook endpoint
-- [ ] Build the X auto-reply polling workflow; acquire X Basic API tier access
-- [ ] Build the WhatsApp channel workflow (Meta Cloud API or middleware)
+- [ ] Build the X auto-reply poller; acquire X Basic API tier access
+- [ ] Build the WhatsApp channel adapter (Meta Cloud API or middleware)
 - [ ] Test all channels end-to-end with the production corpus
 
 ### Phase 4 — Scale & Quality
 
 - [ ] Expand Arabic corpus (Al-Qurtubi, Al-Tabari, Zuhayli, Ibn Ashur)
 - [ ] Implement usage analytics (query volume, confidence distribution, channel breakdown, madhab distribution of retrieved chunks)
-- [ ] Set up automated alerting for n8n workflow failures and API quota thresholds
+- [ ] Set up automated alerting for graph node failures and API quota thresholds
+- [ ] Checkpoint retention job (20–40 rows per turn accumulates quickly)
 - [ ] Periodic review of guardrail effectiveness and scholarly accuracy
 - [ ] Assess whether a fine-tuned embedding model on Islamic text improves retrieval quality
 

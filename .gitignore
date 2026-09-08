@@ -368,3 +368,6 @@ data/cleaned/
 data/chunks/
 data/embedded/
 !data/**/.gitkeep
+
+# macOS
+.DS_Store

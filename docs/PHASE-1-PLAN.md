@@ -1,6 +1,12 @@
 # Phase 1 Implementation Plan
 
-> **Scope:** Local-only Python POC. n8n, VPS deployment, and Telegram channel are deferred to Phase 2.
+> **Status: COMPLETE — historical record.** This plan describes Phase 1 as it was executed.
+> It is kept for provenance and is **not** a statement of current architecture. Where it refers to
+> n8n as the Phase 2 orchestrator, that decision was reversed on 2026-09-08 in favour of LangGraph
+> — see `docs/LANGGRAPH-ARCHITECTURE.md` and epic #38.
+>
+> **Scope (as planned):** Local-only Python POC. Orchestration, VPS deployment, and the Telegram
+> channel were deferred to Phase 2.
 > **Primary corpus:** Ibn Kathir (EN) + Maududi (EN).
 > **Blocker:** Corpus source must be decided before any ingestion work begins (see Step 0).
 
@@ -46,7 +52,7 @@ scripts/
     utils/
       quran_ref.py            # loads quran-json dist/ for english/arabic text lookup
       ayah_resolver.py        # resolves "2:255", "Ayat al-Kursi", etc. → (surah, ayah)
-docker-compose.yml            # Qdrant + Postgres (no n8n yet)
+docker-compose.yml            # Qdrant + Postgres
 .env.example                  # all required env vars, no values
 ```
 
@@ -270,7 +276,7 @@ Extract citations. Append standard disclaimer. Print response.
 
 ## What is Deferred to Phase 2
 
-- n8n workflow development
+- Orchestration layer (planned as n8n at the time; delivered as LangGraph — see epic #38)
 - Telegram channel integration
 - Conversation history persistence (Postgres)
 - External user testing
