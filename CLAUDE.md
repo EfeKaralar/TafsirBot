@@ -2,13 +2,15 @@
 
 ## Project Purpose
 
-TafsirBot is an AI-powered Quranic commentary assistant built on a RAG pipeline over classical and modern Tafsir texts, orchestrated through n8n, and delivered via Telegram, web chat, WhatsApp, and X.
+TafsirBot is an AI-powered Quranic commentary assistant built on a RAG pipeline over classical and modern Tafsir texts, orchestrated with LangGraph, and delivered via Telegram, web chat, WhatsApp, and X.
 
 ## Key Architecture Decisions (Locked In)
 
 - **Vector DB:** Qdrant (self-hosted via Docker Compose) — single `tafsir` collection with named dense+sparse vector fields; hybrid RRF retrieval
 - **Retrieval:** Hybrid BM42+dense via Qdrant server-side RRF fusion (`prefetch` dense + sparse → `FusionQuery(RRF)`); scores are rank-based (not cosine)
-- **Orchestration:** n8n (self-hosted) — one canonical RAG sub-workflow, called by channel-specific workflows
+- **Orchestration:** LangGraph — one compiled `StateGraph` is the RAG core; channels are thin adapters over a single FastAPI surface. **n8n was evaluated and dropped** (2026-09-08); do not reintroduce it. See `docs/LANGGRAPH-ARCHITECTURE.md`
+- **Conversation state:** LangGraph `AsyncPostgresSaver` is the source of truth; `chat_sessions`/`chat_messages` are a read-model for the UI
+- **LLM access:** LangChain chat models via `init_chat_model`, confined to `llm/factory.py`; tiered roles — a cheap model for classify/rewrite/grade/verify, the primary model only for the answer
 - **Ingestion:** Python scripts under `scripts/ingestion/` — offline pipeline, not on the live query path
 - **Quran data:** `sources/quran-json/` submodule provides Quran text and chapter metadata in JSON
 - **Chunking:** Ayah-scoped (not fixed token windows); each chunk maps to a citable scripture reference
@@ -75,11 +77,12 @@ Every chunk must carry:
 
 ## Key File Paths
 
+- `docs/LANGGRAPH-ARCHITECTURE.md` — **the authoritative architecture contract** (graph topology, state schema, version pins, SSE vocabulary). Read this before touching the query path
 - `docs/TAFSIR-CHOICES.md` — per-tafsir analysis and RAG considerations (fact-checked)
 - `docs/TAFSIR-CORPUS.mdx` — interactive corpus dashboard (React component)
 - `docs/CORPUS-SOURCES.md` — source URLs, license status, and acquisition methods
 - `docs/AUDIT-REPORT.md` — retrieval quality benchmarking results
-- `sources/README.md` — full system architecture, environment variables, TODO list
+- `sources/README.md` — system overview, environment variables, TODO list (architecture sections defer to `docs/LANGGRAPH-ARCHITECTURE.md`)
 - `sources/quran-json/dist/quran_en.json` — full English Quran (used by ingestion for `english_text` field)
 - `sources/quran-json/dist/quran.json` — full Arabic Quran (used for `arabic_text` field)
 - `scripts/ingestion/` — offline ingestion pipeline (clean, chunk, embed, upsert, audit)
@@ -92,13 +95,15 @@ Every chunk must carry:
 
 ## Development Phases
 
-- **Phase 1 (complete):** Corpus acquisition + ingestion pipeline (clean/chunk/embed/upsert) + Qdrant (local Docker) + Python POC RAG script + FastAPI + React web chat. No n8n.
-- **Phase 2 (current):** Fiqh corpus expansion; port to n8n; Telegram channel; intent classifier tuning; external testers
+- **Phase 1 (complete):** Corpus acquisition + ingestion pipeline (clean/chunk/embed/upsert) + Qdrant (local Docker) + Python POC RAG script + FastAPI + React web chat.
+- **Phase 2 (current):** LangGraph rearchitecture + `src/tafsirbot/` package overhaul (epic #38); fiqh corpus expansion; Telegram channel; intent classifier tuning; external testers
 - **Phase 3:** X auto-reply, WhatsApp; Arabic corpus and `tafsir_ar` collection
 - **Phase 4:** Corpus expansion (Al-Qurtubi, Al-Tabari, Jalalayn, Ibn Ashur), Arabic support, analytics
 
 ## What to Avoid
 
+- Do not reintroduce n8n. It was evaluated and dropped on 2026-09-08 in favour of LangGraph; any remaining reference in an older doc or git history is stale, not a plan
+- Do not import `langgraph` outside `graph/` and `persistence/checkpointer.py`, or `langchain_anthropic`/`langchain_openai` outside `llm/factory.py` — CI enforces both
 - Do not mix embedding models in the same Qdrant collection
 - Do not commit `.env` files or API keys
 - Do not generate personal fatwa/ruling responses; `fiqh_ruling` queries get scholarly context with a disclaimer, not a direct ruling

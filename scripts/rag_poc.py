@@ -1,7 +1,7 @@
 """
 rag_poc.py — Python proof-of-concept RAG pipeline for TafsirBot.
 
-Runs the full query path end-to-end without n8n:
+Runs the full query path end-to-end:
   1. Input normalization
   2. Intent classification
   3. Ayah reference resolution → Qdrant metadata filter

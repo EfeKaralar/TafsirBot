@@ -1,8 +1,9 @@
 # TafsirBot Webhook API
 
 Thin HTTP API wrapping the existing `rag_poc` RAG pipeline. Designed to be
-structurally close to the intended n8n webhook model so the interface can be
-adopted by channel-specific n8n workflows with no changes.
+channel-agnostic, so every channel adapter (web, Telegram, WhatsApp, X) uses it
+with no changes. This contract is preserved verbatim by the LangGraph
+rearchitecture (epic #38) — see `docs/LANGGRAPH-ARCHITECTURE.md`.
 
 ---
 

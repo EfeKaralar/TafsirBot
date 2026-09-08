@@ -2,12 +2,14 @@
 
 This document freezes the local web PoC contract while the implementation is split across parallel branches.
 
-The local stack is a temporary compatibility layer:
+The stack is:
 
-- web UI -> local HTTP API -> Python PoC pipeline
-- later: web UI -> n8n webhook -> canonical RAG workflow
+- web UI -> FastAPI -> the RAG pipeline (a LangGraph `StateGraph` after epic #38)
 
-The local API should stay structurally close to the n8n input/output model described in `sources/README.md`.
+This request/response contract is **preserved verbatim** by the LangGraph rearchitecture, so the
+web client is unaffected by it. See `docs/LANGGRAPH-ARCHITECTURE.md`. The one addition is a
+streaming endpoint (`POST /api/query/stream`, #36) whose terminal `final` event carries this exact
+response body.
 
 ## Goals
 
@@ -27,7 +29,6 @@ This contract applies to:
 
 It does not define:
 
-- final n8n workflow JSON
 - production auth or multi-user access control
 - Telegram / WhatsApp / X delivery specifics
 
@@ -59,8 +60,8 @@ The local HTTP API should accept a POST payload shaped like this:
 - `channel`: fixed to `web` for the local UI, but keep the field because it exists in the intended cross-channel model
 - `session_id`: stable identifier for one local conversation thread
 - `user_id`: fixed to a local single-user value for now, but required to preserve the future channel/user/session model
-- `message`: current user input; this maps to `raw_query` in the eventual n8n workflow
-- `conversation_history`: ordered prior turns passed into prompt assembly for follow-up coherence
+- `message`: current user input; maps to `question` in the graph's input state
+- `conversation_history`: ordered prior turns passed into prompt assembly for follow-up coherence. After #35 this becomes **advisory** — the LangGraph checkpointer owns thread history and wins when it has any; the field still seeds a cold thread, so existing clients keep working
 - `options.provider`: `anthropic` or `openai`
 - `options.scholar`: optional scholar filter; `null` means no filter
 - `options.top_k`: retrieval depth override; default `5`
@@ -230,7 +231,7 @@ Reasons:
 
 - closer to the intended long-term web channel shape than server-rendered templates
 - clean separation between browser client and webhook-like backend
-- easier to swap the local API base URL for an n8n webhook later
+- easy to point at a different API base URL per environment
 - better fit for chat state, transcript browsing, and saved test-run views
 
 The frontend should initially remain simple:

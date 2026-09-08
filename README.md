@@ -40,7 +40,7 @@ User message → FastAPI webhook (scripts/api.py)
 → Response delivered via web chat (web/) or direct API call
 ```
 
-Infrastructure: Docker Compose (Qdrant + Postgres). n8n orchestration is planned for Phase 2.
+Infrastructure: Docker Compose (Qdrant + Postgres). Orchestration is LangGraph, in-process — see `docs/LANGGRAPH-ARCHITECTURE.md`.
 
 ## Getting Started
 
@@ -106,5 +106,5 @@ Agent/coding guidelines: [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md)
 
 ## Project Status
 
-Phase 1 complete. Phase 2 (n8n orchestration, Telegram, fiqh corpus expansion) in planning.
+Phase 1 complete. Phase 2 (LangGraph rearchitecture — epic #38, Telegram, fiqh corpus expansion) in progress.
 See [sources/README.md](sources/README.md) for the full TODO list.

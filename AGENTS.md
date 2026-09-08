@@ -24,9 +24,7 @@
 - `web/` — React/Vite web chat frontend
   - `web/src/App.jsx` — main chat UI component
   - `web/src/api.js` — HTTP client for the webhook API
-- `n8n/` — n8n workflow exports (Phase 2)
-  - `n8n/workflows/` — JSON exports of all n8n workflow definitions
-- `docker-compose.yml` — infrastructure: Qdrant + Postgres (n8n and Nginx deferred to Phase 2)
+- `docker-compose.yml` — infrastructure: Qdrant + Postgres (Nginx deferred to deployment)
 - `.env.example` — environment variable template (secrets never committed)
 - `CLAUDE.md` — project-specific guidance for AI coding assistants
 
@@ -74,17 +72,24 @@
 - Structured logging via the standard `logging` module (not `print`)
 - No secrets in source; read all credentials from environment variables
 - Raise specific exceptions; never bare `except: pass`
-- Dependencies declared in `scripts/ingestion/requirements.txt` or `pyproject.toml`
+- Dependencies declared in `pyproject.toml` (there is no `requirements.txt`; never use `pip install`)
 
 ### JavaScript (sources/quran-json/scripts/)
 - CommonJS (`require`), async/await, 2-space indentation, semicolons, single quotes
 - lowerCamelCase for variables and functions
 - Keep generated filenames consistent: `quran_<lang>.json`, `chapters/<lang>/<id>.json`, `verses/<id>.json`
 
-### n8n Workflows
-- Export workflows as JSON to `n8n/workflows/` after any structural change
-- Name workflows consistently: `tafsir-rag-core`, `channel-telegram`, `channel-web`, etc.
-- Use n8n sub-workflow pattern: channel workflows call the core RAG sub-workflow
+### LangGraph
+- The graph topology, state schema, and reducer rules are specified in `docs/LANGGRAPH-ARCHITECTURE.md`. Treat that document as the contract — if an implementation needs to diverge, change the document in the same PR
+- `langgraph` may be imported only from `graph/` and `persistence/checkpointer.py`; `langchain_anthropic`/`langchain_openai` only from `llm/factory.py`. CI enforces both
+- Nodes are plain `(state, runtime) -> dict` functions and take their collaborators by injection — never by importing a module-level client. This is what keeps them testable without live APIs
+- `retrieval_attempts` and `verification_attempts` must **not** have reducers; parallel branches would double-increment and halve the loop bound
+
+### Database schema ownership
+- `db/migrations/*.sql` (via `MigrationRunner`, tracked in `schema_migrations`) owns `chat_*` and `test_*` tables
+- `langgraph-checkpoint-postgres` owns `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, tracked in its own `checkpoint_migrations`
+- Never hand-write checkpointer DDL into `db/migrations/` — the library's internal migration list changes between releases and will re-run against tables it did not create
+- Startup order: `MigrationRunner.apply()` then `await saver.setup()`. Both idempotent, both gated behind `TAFSIRBOT_RUN_MIGRATIONS`
 
 
 ## Data & Chunking Conventions
@@ -120,10 +125,10 @@
 - Never commit `.env` files, API keys, or credentials of any kind
 - All secrets live in `.env` (gitignored); reference `.env.example` for the variable list
 - Review third-party source URLs in ingestion scripts before modifying data fetch logic
-- Qdrant and n8n admin interfaces must be behind Nginx with auth in production
+- The Qdrant dashboard and the FastAPI docs endpoints must be behind Nginx with auth in production
 
 
-## Guardrails Reference (for n8n workflow development)
+## Guardrails Reference
 
 - `fiqh_ruling` intent → retrieve and generate; prepend FIQH_NOTE disclaimer that response is scholarly context, not a personal ruling
 - `off_topic` intent → polite refusal, do not retrieve
