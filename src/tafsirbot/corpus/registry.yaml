@@ -1,0 +1,131 @@
+# Canonical corpus registry — the single source of truth for every Tafsir scholar
+# and Hadith collection TafsirBot supports or plans to support.
+#
+# This replaces six previously-duplicated copies of the same information:
+#   - CLEANERS keys          (scripts/ingestion/clean.py)
+#   - SCHOLAR_META           (scripts/ingestion/chunk.py)
+#   - KNOWN_SCHOLARS         (scripts/ingestion/embed.py AND upsert.py)
+#   - _scholar_display       (scripts/rag_poc.py)
+#   - TAFSIR_SCHOLARS /
+#     HADITH_COLLECTIONS     (web/src/App.jsx)
+#
+# docs/CORPUS-REGISTRY.md is GENERATED from this file — run
+# `uv run python scripts/gen_corpus_docs.py` after editing, or CI will fail.
+#
+# status:
+#   available — ingested, embedded, and queryable via the live pipeline
+#   planned   — scheduled for a future phase; not yet ingested
+#
+# `id` is the value stored in the Qdrant `scholar` payload field (for tafsir) or
+# the `collection` payload field (for hadith). Never change one after ingestion.
+
+tafsir:
+  - id: ibn_kathir
+    display_name: Ibn Kathir
+    source_title: Tafsir al-Quran al-Azim (Dar-us-Salam, abridged EN)
+    language: en
+    phase: 1
+    status: available
+    chunk_types: [verse]
+    strip_isnad: true
+    # Shafi'i in fiqh — commonly misattributed as Hanbali. Athari-leaning in
+    # theology via his teacher Ibn Taymiyya. Actively criticises Isra'iliyyat.
+    madhab: shafii
+
+  - id: maududi
+    display_name: Maududi
+    source_title: Tafhim al-Quran / Towards Understanding the Quran (Islamic Foundation EN)
+    language: en
+    phase: 1
+    status: available
+    # Surah introductions are a distinct chunk type and high-value context.
+    chunk_types: [verse, intro]
+    strip_isnad: false
+    madhab: unspecified
+
+  - id: qurtubi
+    display_name: Al-Qurtubi
+    source_title: Al-Jami' li-Ahkam al-Quran
+    language: ar
+    phase: 2
+    status: planned
+    chunk_types: [verse, legal]
+    strip_isnad: false
+    madhab: maliki
+
+  - id: tabari
+    display_name: Al-Tabari
+    source_title: Jami' al-Bayan 'an Ta'wil Ay al-Quran
+    language: ar
+    phase: 2
+    status: planned
+    chunk_types: [verse]
+    strip_isnad: true
+    # Founded his own Jariri school, which did not survive him.
+    madhab: jariri
+
+  - id: jalalayn
+    display_name: Al-Jalalayn
+    source_title: Tafsir al-Jalalayn (Feras Hamza EN)
+    language: en
+    phase: 3
+    status: planned
+    chunk_types: [verse]
+    strip_isnad: false
+    madhab: shafii
+
+  - id: ibn_ashur
+    display_name: Ibn Ashur
+    source_title: Al-Tahrir wa-al-Tanwir
+    language: ar
+    phase: 3
+    status: planned
+    chunk_types: [verse]
+    strip_isnad: false
+    madhab: maliki
+
+# All hadith collections are planned. They live in a SEPARATE Qdrant collection
+# because their metadata schema differs fundamentally from tafsir chunks
+# (book/chapter/hadith_number/narrator_chain/grading vs surah/ayah/scholar).
+hadith:
+  - id: bukhari
+    display_name: Sahih al-Bukhari
+    source_title: Sahih al-Bukhari
+    language: en
+    phase: 3
+    status: planned
+
+  - id: muslim
+    display_name: Sahih Muslim
+    source_title: Sahih Muslim
+    language: en
+    phase: 3
+    status: planned
+
+  - id: abu_dawud
+    display_name: Sunan Abu Dawud
+    source_title: Sunan Abu Dawud
+    language: en
+    phase: 3
+    status: planned
+
+  - id: tirmidhi
+    display_name: Jami' at-Tirmidhi
+    source_title: Jami' at-Tirmidhi
+    language: en
+    phase: 3
+    status: planned
+
+  - id: nasai
+    display_name: Sunan an-Nasa'i
+    source_title: Sunan an-Nasa'i
+    language: en
+    phase: 3
+    status: planned
+
+  - id: ibn_majah
+    display_name: Sunan Ibn Majah
+    source_title: Sunan Ibn Majah
+    language: en
+    phase: 3
+    status: planned

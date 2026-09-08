@@ -40,14 +40,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger("upsert")
 
+
+def _settings():
+    """Resolved settings — the single env surface (src/tafsirbot/settings.py)."""
+    from tafsirbot.settings import get_settings
+
+    return get_settings()
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 EMBEDDED_DIR = _REPO_ROOT / "data" / "embedded"
 
-KNOWN_SCHOLARS = ["ibn_kathir", "maududi", "tabari", "jalalayn", "qurtubi", "ibn_ashur"]
+def _known_scholars() -> list[str]:
+    """Tafsir scholar ids from the canonical corpus registry (was a hardcoded list)."""
+    from tafsirbot.corpus.registry import get_registry
 
-VECTOR_SIZE = 3072       # text-embedding-3-large output dimensions
+    return [s.id for s in get_registry().tafsir]
+
+
+KNOWN_SCHOLARS = _known_scholars()
+
+# Derived from the configured embedding model — declaring it independently meant
+# changing EMBEDDING_MODEL silently left the dimension wrong.
+VECTOR_SIZE = _settings().vector_size
 DEFAULT_BATCH_SIZE = 200
-SPARSE_MODEL_NAME = "Qdrant/bm42-all-minilm-l6-v2-attentions"
+SPARSE_MODEL_NAME = _settings().sparse_model
 
 
 def _point_id(scholar: str, surah: int, ayah_start: int, chunk_type: str) -> int:

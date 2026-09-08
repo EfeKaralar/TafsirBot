@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [master, epic-langgraph]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # quran-json provides the ayah text the corpus tests read.
+          submodules: recursive
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Pinned to 3.12 by .python-version: fastembed -> onnxruntime has no 3.13+
+      # wheels, and scripts/ingestion/chunk.py shadows the stdlib `chunk` module
+      # that 3.13 removed.
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Lint
+        run: uv run ruff check src/ tests/
+
+      - name: Type-check
+        run: uv run mypy
+
+      - name: Enforce import seams
+        run: bash scripts/check_import_seams.sh
+
+      - name: Check generated docs are in sync
+        run: uv run python scripts/gen_corpus_docs.py --check
+
+      # Offline by default: the `integration` and `live` markers are excluded via
+      # addopts, so this needs no API keys, no Qdrant and no Postgres.
+      - name: Test
+        run: uv run pytest -q

@@ -1,25 +1,40 @@
 # TafsirBot Corpus Registry
 
-> **Purpose:** Single source of truth for all Tafsir scholars and Hadith collections
-> supported or planned by TafsirBot. The frontend SourceFilter component reads from
-> this registry to determine which sources to display as selectable vs planned.
+> **Purpose:** human-readable reference for all Tafsir scholars and Hadith collections
+> supported or planned by TafsirBot.
+>
+> **The machine-readable source of truth is `src/tafsirbot/corpus/registry.yaml`.**
+> The tables below are generated from it — run `uv run python scripts/gen_corpus_docs.py`
+> after editing, or the test suite will fail. The prose analysis sections are
+> hand-written and are not touched by the generator.
+>
+> Consumers read the registry through Python (`tafsirbot.corpus.registry`) or over HTTP
+> (`GET /api/sources`); nothing parses this markdown.
 >
 > **Status values:**
-> - `available` — ingested, embedded, and queryable via the live RAG pipeline
+> - `available` — declared ingested and queryable. `GET /api/sources` additionally
+>   reports an `indexed` flag from a live Qdrant probe, which is what the UI should
+>   trust — the two can disagree if a source is declared but not yet upserted.
 > - `planned` — scheduled for a future phase; not yet ingested
+>
+> The `id` column is the value stored in the Qdrant payload (`scholar` for tafsir,
+> `collection` for hadith). Never change one after ingestion.
 
 ---
 
 ## Tafsir Scholars
 
-| ID | Display Name | Language | Phase | Status | Qdrant Scholar Key |
-|----|-------------|----------|-------|--------|--------------------|
-| `ibn_kathir` | Ibn Kathir | English | 1 | **available** | `ibn_kathir` |
-| `maududi` | Maududi | English | 1 | **available** | `maududi` |
-| `qurtubi` | Al-Qurtubi | Arabic | 2 | planned | `qurtubi` |
-| `tabari` | Al-Tabari | Arabic | 2 | planned | `tabari` |
-| `jalalayn` | Al-Jalalayn | English | 3 | planned | `jalalayn` |
-| `ibn_ashur` | Ibn Ashur | Arabic | 3 | planned | `ibn_ashur` |
+<!-- BEGIN GENERATED: tafsir-table -->
+<!-- Generated from src/tafsirbot/corpus/registry.yaml — do not edit by hand. -->
+| ID | Display Name | Language | Phase | Status | Madhab |
+|----|-------------|----------|-------|--------|--------|
+| `ibn_kathir` | Ibn Kathir | en | 1 | **available** | shafii |
+| `maududi` | Maududi | en | 1 | **available** | unspecified |
+| `qurtubi` | Al-Qurtubi | ar | 2 | planned | maliki |
+| `tabari` | Al-Tabari | ar | 2 | planned | jariri |
+| `ibn_ashur` | Ibn Ashur | ar | 3 | planned | maliki |
+| `jalalayn` | Al-Jalalayn | en | 3 | planned | shafii |
+<!-- END GENERATED: tafsir-table -->
 
 ### Ibn Kathir — *Tafsir al-Qur'an al-Azim* (14th c.)
 
@@ -103,14 +118,17 @@ from the `tafsir` collection, because their metadata schema differs significantl
 
 ### Kutub al-Sitta (The Six Books)
 
+<!-- BEGIN GENERATED: hadith-table -->
+<!-- Generated from src/tafsirbot/corpus/registry.yaml — do not edit by hand. -->
 | ID | Display Name | Language | Phase | Status |
 |----|-------------|----------|-------|--------|
-| `bukhari` | Sahih al-Bukhari | Arabic / English | 3 | planned |
-| `muslim` | Sahih Muslim | Arabic / English | 3 | planned |
-| `abu_dawud` | Sunan Abu Dawud | Arabic / English | 3 | planned |
-| `tirmidhi` | Jami' at-Tirmidhi | Arabic / English | 3 | planned |
-| `nasai` | Sunan an-Nasa'i | Arabic / English | 3 | planned |
-| `ibn_majah` | Sunan Ibn Majah | Arabic / English | 3 | planned |
+| `abu_dawud` | Sunan Abu Dawud | en | 3 | planned |
+| `bukhari` | Sahih al-Bukhari | en | 3 | planned |
+| `ibn_majah` | Sunan Ibn Majah | en | 3 | planned |
+| `muslim` | Sahih Muslim | en | 3 | planned |
+| `nasai` | Sunan an-Nasa'i | en | 3 | planned |
+| `tirmidhi` | Jami' at-Tirmidhi | en | 3 | planned |
+<!-- END GENERATED: hadith-table -->
 
 #### Sahih al-Bukhari
 - **Compiler:** Muhammad ibn Ismail al-Bukhari (810–870 CE)

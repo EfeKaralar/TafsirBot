@@ -52,38 +52,25 @@ CHUNKS_DIR = _REPO_ROOT / "data" / "chunks"
 
 # ── Scholar metadata ─────────────────────────────────────────────────────────
 
-SCHOLAR_META: dict[str, dict] = {
-    "ibn_kathir": {
-        "scholar": "ibn_kathir",
-        "language": "en",
-        "source_title": "Tafsir al-Quran al-Azim (Dar-us-Salam, abridged EN)",
-    },
-    "maududi": {
-        "scholar": "maududi",
-        "language": "en",
-        "source_title": "Tafhim al-Quran / Towards Understanding the Quran (Islamic Foundation EN)",
-    },
-    "tabari": {
-        "scholar": "tabari",
-        "language": "ar",
-        "source_title": "Jami' al-Bayan 'an Ta'wil Ay al-Quran",
-    },
-    "jalalayn": {
-        "scholar": "jalalayn",
-        "language": "en",
-        "source_title": "Tafsir al-Jalalayn (Feras Hamza EN)",
-    },
-    "qurtubi": {
-        "scholar": "qurtubi",
-        "language": "ar",
-        "source_title": "Al-Jami' li-Ahkam al-Quran",
-    },
-    "ibn_ashur": {
-        "scholar": "ibn_ashur",
-        "language": "ar",
-        "source_title": "Al-Tahrir wa-al-Tanwir",
-    },
-}
+def _load_scholar_meta() -> dict[str, dict]:
+    """Derive per-scholar chunk metadata from the canonical corpus registry.
+
+    Was a hardcoded dict duplicating registry.yaml. Shape is preserved exactly so
+    downstream chunk payloads and the existing tests are unaffected.
+    """
+    from tafsirbot.corpus.registry import get_registry
+
+    return {
+        source.id: {
+            "scholar": source.id,
+            "language": source.language,
+            "source_title": source.source_title,
+        }
+        for source in get_registry().tafsir
+    }
+
+
+SCHOLAR_META: dict[str, dict] = _load_scholar_meta()
 
 
 def _quran_texts(qr: QuranRef, surah: int, ayah_start: int, ayah_end: int) -> tuple[str, str]:

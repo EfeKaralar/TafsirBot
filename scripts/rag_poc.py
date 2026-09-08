@@ -43,6 +43,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("rag_poc")
 
+
+def _settings():
+    """Resolved settings — the single env surface (src/tafsirbot/settings.py)."""
+    from tafsirbot.settings import get_settings
+
+    return get_settings()
+
+
 # ── Types ─────────────────────────────────────────────────────────────────────
 
 Intent = Literal["tafsir", "general_islamic", "fiqh_ruling", "off_topic"]
@@ -73,7 +81,7 @@ TEMPERATURE = 0.3
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
 OPENAI_MODEL = "gpt-4o"
-SPARSE_MODEL_NAME = "Qdrant/bm42-all-minilm-l6-v2-attentions"
+SPARSE_MODEL_NAME = _settings().sparse_model
 
 
 # ── Step 1: Normalize input ───────────────────────────────────────────────────
@@ -280,15 +288,15 @@ Rules:
 
 
 def _scholar_display(scholar: str) -> str:
-    mapping = {
-        "ibn_kathir": "Ibn Kathir",
-        "maududi": "Maududi",
-        "tabari": "Al-Tabari",
-        "jalalayn": "Al-Jalalayn",
-        "qurtubi": "Al-Qurtubi",
-        "ibn_ashur": "Ibn Ashur",
-    }
-    return mapping.get(scholar, scholar.replace("_", " ").title())
+    """Human-readable scholar name, from the canonical corpus registry.
+
+    Was a hardcoded dict — one of six copies of the same data. Unknown ids still fall
+    back to a titled form rather than raising, because retrieval must not crash on an
+    unexpected payload value.
+    """
+    from tafsirbot.corpus.registry import display_name
+
+    return display_name(scholar)
 
 
 def assemble_prompt(query: str, chunks: list[dict]) -> str:
