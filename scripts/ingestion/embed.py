@@ -40,16 +40,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger("embed")
 
+
+def _settings():
+    """Resolved settings — the single env surface (src/tafsirbot/settings.py)."""
+    from tafsirbot.settings import get_settings
+
+    return get_settings()
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 CHUNKS_DIR = _REPO_ROOT / "data" / "chunks"
 EMBEDDED_DIR = _REPO_ROOT / "data" / "embedded"
 
-KNOWN_SCHOLARS = ["ibn_kathir", "maududi", "tabari", "jalalayn", "qurtubi", "ibn_ashur"]
+def _known_scholars() -> list[str]:
+    """Tafsir scholar ids from the canonical corpus registry (was a hardcoded list)."""
+    from tafsirbot.corpus.registry import get_registry
+
+    return [s.id for s in get_registry().tafsir]
+
+
+KNOWN_SCHOLARS = _known_scholars()
 
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_RETRY_ATTEMPTS = 5
 DEFAULT_RETRY_BASE_DELAY = 2.0  # seconds; doubles on each retry
-TOKEN_LIMIT = 8191  # text-embedding-3-large max input tokens
+TOKEN_LIMIT = _settings().embedding_token_limit  # property of EMBEDDING_MODEL
 
 _tokenizer = tiktoken.get_encoding("cl100k_base")
 

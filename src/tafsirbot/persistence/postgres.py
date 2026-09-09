@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 from uuid import UUID
 
 import psycopg
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Json
+
+from tafsirbot.errors import PersistenceError
 
 from .config import PostgresConfig
 from .migrations import MigrationRunner
@@ -24,19 +27,39 @@ def _maybe_uuid(value: UUID | str) -> UUID | None:
         return None
 
 
+def _require_row(row: DictRow | None, what: str) -> DictRow:
+    """Assert a RETURNING clause actually produced a row.
+
+    Without this, ``Record(**cur.fetchone())`` raises
+    ``TypeError: argument after ** must be a mapping, not NoneType`` — which says
+    nothing about what failed. A plain ``INSERT ... RETURNING`` always yields a row,
+    but ``ON CONFLICT DO NOTHING ... RETURNING`` does not, so this guards a change
+    that is easy to make and hard to debug.
+    """
+    if row is None:
+        raise PersistenceError(f"{what} returned no row — the write did not take effect")
+    return row
+
+
 class PostgresPersistence:
     def __init__(self, config: PostgresConfig) -> None:
         self.config = config
 
     @classmethod
-    def from_env(cls) -> "PostgresPersistence":
+    def from_env(cls) -> PostgresPersistence:
         return cls(PostgresConfig.from_env())
 
     def apply_migrations(self) -> list[str]:
         return MigrationRunner(self.config).apply()
 
     @contextmanager
-    def connection(self) -> Iterator[psycopg.Connection]:
+    def connection(self) -> Iterator[psycopg.Connection[DictRow]]:
+        """Yield a connection whose cursors return dicts, not tuples.
+
+        The ``DictRow`` parameter is load-bearing: every query here does
+        ``Record(**row)``, which requires a mapping. Annotating this as a bare
+        ``psycopg.Connection`` silently types rows as tuples and hides that.
+        """
         with psycopg.connect(self.config.conninfo(), row_factory=dict_row) as conn:
             yield conn
 
@@ -130,7 +153,7 @@ class PostgresPersistence:
                     )
             row = cur.fetchone()
             conn.commit()
-        return ChatSessionRecord(**row)
+        return ChatSessionRecord(**_require_row(row, "ensure_chat_session"))
 
     def add_chat_message(
         self,
@@ -184,7 +207,7 @@ class PostgresPersistence:
                 (session_uuid,),
             )
             conn.commit()
-        return ChatMessageRecord(**row)
+        return ChatMessageRecord(**_require_row(row, "add_chat_message"))
 
     def list_chat_messages(
         self,
@@ -256,7 +279,7 @@ class PostgresPersistence:
             )
             row = cur.fetchone()
             conn.commit()
-        return TestRunRecord(**row)
+        return TestRunRecord(**_require_row(row, "create_test_run / complete_test_run"))
 
     def list_test_runs(self, *, limit: int = 20) -> list[TestRunRecord]:
         with self.connection() as conn, conn.cursor() as cur:
@@ -338,7 +361,7 @@ class PostgresPersistence:
             )
             row = cur.fetchone()
             conn.commit()
-        return TestRunRecord(**row)
+        return TestRunRecord(**_require_row(row, "create_test_run / complete_test_run"))
 
     def add_test_run_case(
         self,
@@ -392,7 +415,7 @@ class PostgresPersistence:
             )
             row = cur.fetchone()
             conn.commit()
-        return TestRunCaseRecord(**row)
+        return TestRunCaseRecord(**_require_row(row, "add_test_run_case"))
 
     def list_test_run_cases(
         self,

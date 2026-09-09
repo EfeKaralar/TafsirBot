@@ -49,6 +49,14 @@ logging.basicConfig(
 logger = logging.getLogger("tafsirbot.api")
 
 
+def _settings():
+    """Resolved settings — the single env surface (src/tafsirbot/settings.py)."""
+    from tafsirbot.settings import get_settings
+
+    return get_settings()
+
+
+
 # ── Pydantic request / response models ────────────────────────────────────────
 
 
@@ -106,6 +114,28 @@ class HealthResponse(BaseModel):
     version: str = "0.1.0"
     providers: list[str]
     persistence: bool
+
+
+class SourceItem(BaseModel):
+    id: str
+    label: str
+    language: str
+    phase: int
+    status: str          # registry declaration: "available" | "planned"
+    source_title: str
+    indexed: bool        # whether Qdrant actually holds points for this source
+
+
+class SourcesResponse(BaseModel):
+    """Corpus registry, for the web UI's source filter.
+
+    Replaces the hardcoded TAFSIR_SCHOLARS / HADITH_COLLECTIONS arrays in App.jsx.
+    """
+
+    tafsir: list[SourceItem]
+    hadith: list[SourceItem]
+    providers: list[str]
+    defaults: dict
 
 
 class ChatSessionSummary(BaseModel):
@@ -166,12 +196,61 @@ class TestRunDetail(BaseModel):
 # ── App lifespan (startup / shutdown) ────────────────────────────────────────
 
 
+def _probe_indexed_sources(runtime: dict) -> dict[str, bool]:
+    """Ask Qdrant which registry sources actually have points, once at startup.
+
+    Best-effort: a probe failure yields False rather than blocking startup, so the
+    API still serves when Qdrant is unreachable. Cached for the process lifetime —
+    ingestion is offline, so this cannot change under a running server.
+    """
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    from tafsirbot.corpus.registry import get_registry
+
+    client = runtime["qdrant_client"]
+    collections = {
+        "tafsir": runtime.get("collection"),
+        "hadith": runtime.get("hadith_collection"),
+    }
+    # Tafsir chunks are tagged by `scholar`; hadith chunks by `collection`.
+    payload_key = {"tafsir": "scholar", "hadith": "collection"}
+
+    result: dict[str, bool] = {}
+    for source in get_registry().sources.values():
+        collection = collections.get(source.kind)
+        if not collection:
+            result[source.id] = False
+            continue
+        try:
+            count = client.count(
+                collection_name=collection,
+                count_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key=payload_key[source.kind],
+                            match=MatchValue(value=source.id),
+                        )
+                    ]
+                ),
+                exact=False,
+            )
+            result[source.id] = count.count > 0
+        except Exception as exc:  # noqa: BLE001 — probe must never block startup
+            logger.debug("Index probe failed for %s: %s", source.id, exc)
+            result[source.id] = False
+
+    live = sorted(k for k, v in result.items() if v)
+    logger.info("Indexed sources: %s", ", ".join(live) if live else "(none)")
+    return result
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initialising TafsirBot runtime…")
     runtime = rag_poc.build_runtime()
     app.state.runtime = runtime
     app.state.persistence = None
+    app.state.indexed_sources = _probe_indexed_sources(runtime)
     try:
         from persistence import PostgresPersistence
 
@@ -199,10 +278,9 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-    ],
+    # From Settings (CORS_ORIGINS), not hardcoded — the previous literal list meant
+    # any non-dev deployment failed CORS, and SSE will need a correct origin.
+    allow_origins=_settings().cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -223,6 +301,46 @@ def health() -> HealthResponse:
     )
 
 
+@app.get("/api/sources", response_model=SourcesResponse, tags=["ops"])
+def sources() -> SourcesResponse:
+    """Corpus registry for the web UI's source filter.
+
+    `status` is the registry's declaration; `indexed` is whether Qdrant actually
+    holds points for that source right now. They can disagree — a source declared
+    available but not yet upserted, or a stale collection — and the UI should trust
+    `indexed` when deciding what is selectable.
+    """
+    from tafsirbot.corpus.registry import get_registry
+
+    registry = get_registry()
+    indexed: dict[str, bool] = app.state.indexed_sources
+
+    def to_items(kind: str) -> list[SourceItem]:
+        return [
+            SourceItem(
+                id=s.id,
+                label=s.display_name,
+                language=s.language,
+                phase=s.phase,
+                status=s.status,
+                source_title=s.source_title,
+                indexed=indexed.get(s.id, False),
+            )
+            for s in registry.of_kind(kind)  # type: ignore[arg-type]
+        ]
+
+    runtime = app.state.runtime
+    return SourcesResponse(
+        tafsir=to_items("tafsir"),
+        hadith=to_items("hadith"),
+        providers=list(runtime["clients"].keys()),
+        defaults={
+            "provider": os.environ.get("LLM_PROVIDER", "anthropic"),
+            "top_k": rag_poc.TOP_K,
+        },
+    )
+
+
 def _require_persistence():
     persistence = app.state.persistence
     if persistence is None:
@@ -230,7 +348,7 @@ def _require_persistence():
             status_code=503,
             detail=(
                 "Persistence is not configured or migrations have not been applied. "
-                "Check Postgres settings and run scripts/persistence/migrate.py."
+                "Check Postgres settings and run `tafsirbot migrate`."
             ),
         )
     return persistence

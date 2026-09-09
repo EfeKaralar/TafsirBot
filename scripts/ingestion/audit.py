@@ -35,8 +35,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("audit")
 
+
+def _settings():
+    """Resolved settings — the single env surface (src/tafsirbot/settings.py)."""
+    from tafsirbot.settings import get_settings
+
+    return get_settings()
+
+
 DEFAULT_TOP_K = 5
-SPARSE_MODEL_NAME = "Qdrant/bm42-all-minilm-l6-v2-attentions"
+SPARSE_MODEL_NAME = _settings().sparse_model
 
 
 def _build_filter(refs) -> dict | None:

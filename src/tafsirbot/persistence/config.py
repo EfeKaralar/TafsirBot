@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tafsirbot.settings import Settings
 
 
 @dataclass(frozen=True)
@@ -15,7 +19,29 @@ class PostgresConfig:
     connect_timeout: int = 5
 
     @classmethod
-    def from_env(cls) -> "PostgresConfig":
+    def from_settings(cls, settings: Settings) -> PostgresConfig:
+        """Build from :class:`~tafsirbot.settings.Settings` — preferred for new code.
+
+        ``Settings`` parses ``.env`` itself, so this works without ``load_dotenv``.
+        """
+        return cls(
+            host=settings.postgres_host,
+            port=settings.postgres_port,
+            dbname=settings.postgres_db,
+            user=settings.postgres_user,
+            password=settings.postgres_password,
+            sslmode=settings.postgres_sslmode,
+            connect_timeout=settings.postgres_connect_timeout,
+        )
+
+    @classmethod
+    def from_env(cls) -> PostgresConfig:
+        """Build from ``os.environ`` directly.
+
+        Retained for the legacy ``scripts/`` entry points, which call ``load_dotenv()``
+        at import. Note this does *not* see ``.env`` on its own — prefer
+        :meth:`from_settings`.
+        """
         return cls(
             host=os.environ.get("POSTGRES_HOST", "localhost"),
             port=int(os.environ.get("POSTGRES_PORT", "5432")),
